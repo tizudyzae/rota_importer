@@ -124,9 +124,9 @@
     .selection-actions .btn{width:100%}
     .selection-actions .btn{flex:1 1 120px}
     .report-scope-pills{display:flex;flex-wrap:wrap;gap:8px;max-height:220px;overflow:auto;padding:2px}
-    .report-scope-pill{appearance:none;border:1px solid var(--border);background:var(--surface-soft);color:var(--muted);border-radius:999px;padding:8px 12px;font-size:13px;font-weight:700;cursor:pointer;transition:all .2s ease}
-    .report-scope-pill:hover{background:var(--accent-soft);color:var(--accent)}
-    .report-scope-pill.active{background:var(--accent);border-color:var(--accent);color:#fff;box-shadow:0 10px 20px rgba(0,123,195,.18)}
+    .report-scope-pill{appearance:none;border:1px solid var(--pill-border,var(--border));background:var(--pill-bg,var(--surface-soft));color:var(--pill-ink,var(--muted));border-radius:999px;padding:8px 12px;font-size:13px;font-weight:700;cursor:pointer;transition:all .2s ease}
+    .report-scope-pill:hover{background:var(--pill-hover-bg,var(--accent-soft));color:var(--pill-hover-ink,var(--accent));border-color:var(--pill-hover-border,var(--accent))}
+    .report-scope-pill.active{background:var(--pill-active-bg,var(--accent));border-color:var(--pill-active-border,var(--accent));color:var(--pill-active-ink,#fff);box-shadow:0 10px 20px rgba(0,123,195,.18)}
     .report-scope-pill:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
     .viewer{display:flex;flex-direction:column;gap:20px}
     .viewer-tabs{display:flex;gap:12px;flex-wrap:wrap;background:var(--surface);padding:12px;border-radius:24px;box-shadow:0 14px 30px rgba(9,42,58,.08);position:sticky;top:0;z-index:10}
@@ -156,7 +156,7 @@
     .line-preset-btn:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
     .line-preset-btn[disabled]{opacity:.5;cursor:not-allowed;box-shadow:none}
     .line-preset-btn.active{background:var(--accent);color:#fff;border-color:var(--accent);box-shadow:0 10px 20px rgba(0,123,195,.18)}
-    .line-chart-shell{position:relative;border:1px solid var(--border);border-radius:24px;background:var(--surface);box-shadow:0 18px 36px rgba(7,45,65,.08);padding:24px;display:flex;flex-direction:column;gap:18px;--line-axis-height:36px;--line-track-gap:12px;touch-action:pan-y}
+    .line-chart-shell{position:relative;border:1px solid var(--border);border-radius:24px;background:var(--surface);box-shadow:0 18px 36px rgba(7,45,65,.08);padding:24px;display:flex;flex-direction:column;gap:18px;--line-axis-height:36px;--line-track-gap:12px;touch-action:none}
     .line-chart-shell[hidden]{display:none !important}
     .line-chart-axis{position:relative;height:var(--line-axis-height)}
     .line-axis-tick{position:absolute;bottom:0;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;gap:6px;font-size:12px;color:var(--muted);white-space:nowrap}
@@ -309,6 +309,9 @@
     .appearance-item{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 14px;border:1px solid rgba(6,28,46,.1);border-radius:16px;background:var(--surface-soft)}
     .appearance-label{display:flex;flex-direction:column;font-weight:700;color:var(--ink);gap:2px;font-size:13px}
     .appearance-label small{font-size:11px;font-weight:600;color:var(--muted)}
+    .appearance-inputs{display:flex;align-items:center;gap:8px}
+    .appearance-alias-input{width:140px;padding:6px 10px;border:1px solid var(--border);border-radius:10px;background:#fff;color:var(--ink);font:13px/1.2 "Averta Std","Nunito Sans","Helvetica Neue",Helvetica,Arial,sans-serif}
+    .appearance-alias-input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(0,123,195,.16)}
     .appearance-color-input{width:52px;height:36px;border-radius:12px;border:1px solid var(--border);padding:0;background:#fff;cursor:pointer}
     .appearance-color-input:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
     .appearance-color-input:disabled{opacity:.5;cursor:not-allowed}
@@ -496,8 +499,9 @@
     const toMin=(h,m)=>parseInt(h,10)*60+parseInt(m,10);
     const fmtHM=mins=>{const m=((mins%1440)+1440)%1440;const h=Math.floor(m/60), mm=m%60;return `${pad2(h)}:${pad2(mm)}`};
     const fmtHMDisplay=mins=>{
-      if(Number.isNaN(mins)) return '';
-      const total=((mins%1440)+1440)%1440;
+      if(!Number.isFinite(mins)) return '';
+      const safeMinutes=Math.round(mins);
+      const total=((safeMinutes%1440)+1440)%1440;
       const hours=Math.floor(total/60);
       const minutes=total%60;
       const suffix=hours>=12?'pm':'am';
@@ -520,6 +524,8 @@
     function getRowDisplayName(row,index){
       const fallbackLabel=`Colleague ${index}`;
       if(!row) return fallbackLabel;
+      const alias=getStoredAliasForEntry(row);
+      if(alias) return alias;
       const cleaned=(row.name||'').trim();
       if(cleaned) return cleaned;
       const fromRaw=cleanColleagueName(row.rawName||'');
@@ -814,6 +820,7 @@
     const STORAGE_KEY='loggannt.rotas.v1';
     const STORAGE_SELECTION_KEY='loggannt.rotas.selection';
     const STORAGE_COLOR_KEY='loggannt.rotas.colors';
+    const STORAGE_ALIAS_KEY='loggannt.rotas.aliases';
     const STORAGE_HOME_TIP_KEY='loggannt.rotas.homeTipDismissed';
     const MAX_STORED_WEEKS=4;
 
@@ -1641,6 +1648,53 @@
       return value.trim().toLowerCase();
     }
 
+
+    function hexToRgb(hex){
+      const normalized=normalizeColorHex(hex);
+      if(!normalized) return null;
+      const value=normalized.slice(1);
+      const int=parseInt(value,16);
+      if(!Number.isFinite(int)) return null;
+      return {r:(int>>16)&255,g:(int>>8)&255,b:int&255};
+    }
+
+    function makeRgba(hex,alpha){
+      const rgb=hexToRgb(hex);
+      if(!rgb) return null;
+      const safeAlpha=Math.max(0,Math.min(1,alpha));
+      return `rgba(${rgb.r}, ${rgb.g}, ${rgb.b}, ${safeAlpha})`;
+    }
+
+    function getContrastTextColor(hex){
+      const rgb=hexToRgb(hex);
+      if(!rgb) return '#061626';
+      const luminance=((0.299*rgb.r)+(0.587*rgb.g)+(0.114*rgb.b))/255;
+      return luminance>0.62?'#061626':'#ffffff';
+    }
+
+    function buildReportScopePillStyleForOption(optionValue){
+      const idx=parseInt(optionValue,10);
+      if(!Number.isInteger(idx) || idx<0 || idx>=lastIndividuals.length) return '';
+      const person=lastIndividuals[idx];
+      const color=person?getStoredColorForEntry(person):null;
+      if(!color) return '';
+      const ink=getContrastTextColor(color);
+      const bg=makeRgba(color,.16)||'var(--surface-soft)';
+      const hover=makeRgba(color,.28)||'var(--accent-soft)';
+      const border=makeRgba(color,.42)||color;
+      return [
+        `--pill-bg:${bg}`,
+        `--pill-border:${border}`,
+        `--pill-ink:${ink}`,
+        `--pill-hover-bg:${hover}`,
+        `--pill-hover-border:${color}`,
+        `--pill-hover-ink:${ink}`,
+        `--pill-active-bg:${color}`,
+        `--pill-active-border:${color}`,
+        `--pill-active-ink:${ink}`
+      ].join(';');
+    }
+
     function loadColorPreferences(){
       try{
         if(!storageSupported) return new Map();
@@ -1674,6 +1728,56 @@
       }catch(err){
         console.warn('Failed to store colour preferences:',err);
       }
+    }
+
+    
+
+    function loadAliasPreferences(){
+      try{
+        if(!storageSupported) return new Map();
+        const raw=window.localStorage.getItem(STORAGE_ALIAS_KEY);
+        if(!raw) return new Map();
+        const parsed=JSON.parse(raw);
+        const map=new Map();
+        if(parsed && typeof parsed==='object'){
+          Object.entries(parsed).forEach(([key,val])=>{
+            if(!key || typeof val!=='string') return;
+            const trimmed=val.trim();
+            if(trimmed) map.set(key,trimmed);
+          });
+        }
+        return map;
+      }catch(err){
+        console.warn('Failed to read alias preferences:',err);
+        return new Map();
+      }
+    }
+
+    function persistAliasPreferences(){
+      if(!storageSupported) return;
+      try{
+        const payload={};
+        aliasPreferenceMap.forEach((value,key)=>{ payload[key]=value; });
+        window.localStorage.setItem(STORAGE_ALIAS_KEY,JSON.stringify(payload));
+      }catch(err){
+        console.warn('Failed to store alias preferences:',err);
+      }
+    }
+
+    const aliasPreferenceMap=loadAliasPreferences();
+
+    function getAliasPreferenceByKey(key){
+      if(!key) return null;
+      return aliasPreferenceMap.get(key)||null;
+    }
+
+    function getStoredAliasForEntry(entry){
+      const keys=buildColorLookupKeys(entry);
+      for(const key of keys){
+        const value=getAliasPreferenceByKey(key);
+        if(typeof value==='string' && value.trim()) return value.trim();
+      }
+      return null;
     }
 
     const colorPreferenceMap=loadColorPreferences();
@@ -1724,8 +1828,10 @@
       return defaultPickerColor;
     }
 
-    function refreshReportsForColorChange(){
+    function refreshReportsForAppearanceChange(){
       const weeks=getActiveWeekData();
+      updateIndividualControls(weeks);
+      syncAppearanceControls(weeks);
       renderScheduleView(weeks);
       renderLineView(weeks);
       renderPdfPreview(weeks);
@@ -1740,7 +1846,19 @@
         colorPreferenceMap.delete(key);
       }
       persistColorPreferences();
-      refreshReportsForColorChange();
+      refreshReportsForAppearanceChange();
+    }
+
+    function handleAliasPreferenceChange(key,alias){
+      if(!key) return;
+      const trimmed=typeof alias==='string'?alias.trim():'';
+      if(trimmed){
+        aliasPreferenceMap.set(key,trimmed);
+      }else{
+        aliasPreferenceMap.delete(key);
+      }
+      persistAliasPreferences();
+      refreshReportsForAppearanceChange();
     }
 
     function isHomeTipDismissed(){
@@ -3692,6 +3810,10 @@
         pill.dataset.indexValue=opt.value;
         pill.setAttribute('aria-pressed',opt.selected?'true':'false');
         pill.textContent=opt.textContent||`Colleague ${opt.value}`;
+        const styleText=buildReportScopePillStyleForOption(opt.value);
+        if(styleText){
+          pill.setAttribute('style',styleText);
+        }
         reportScopePills.appendChild(pill);
       });
       reportScopePills.setAttribute('aria-hidden','false');
@@ -3823,6 +3945,7 @@
           key:primary,
           row,
           index,
+          defaultLabel:(row && (row.name||'').trim()) || cleanColleagueName((row && row.rawName) || '') || `Colleague ${index+1}`,
           label:getRowDisplayName(row,index+1),
           locked:isNathanName(row.rawName||row.name),
         });
@@ -3835,7 +3958,7 @@
       entries.sort((a,b)=>a.label.localeCompare(b.label,undefined,{sensitivity:'base'}));
       const hint=document.createElement('p');
       hint.className='control-hint appearance-hint';
-      hint.textContent='Adjust colleague bar colours across every report. Nathan\'s colour stays locked for quick identification.';
+      hint.textContent='Adjust colleague aliases and bar colours across every report. Nathan\'s colour stays locked for quick identification.';
       appearanceControls.appendChild(hint);
       const grid=document.createElement('div');
       grid.className='appearance-grid';
@@ -3852,6 +3975,18 @@
           lock.textContent='Locked';
           label.appendChild(lock);
         }
+        const controls=document.createElement('div');
+        controls.className='appearance-inputs';
+        const aliasInput=document.createElement('input');
+        aliasInput.type='text';
+        aliasInput.className='appearance-alias-input';
+        aliasInput.placeholder=entry.defaultLabel || entry.label;
+        aliasInput.setAttribute('aria-label',`Alias for ${entry.defaultLabel || entry.label}`);
+        aliasInput.value=getAliasPreferenceByKey(entry.key)||'';
+        aliasInput.maxLength=40;
+        aliasInput.addEventListener('change',event=>{
+          handleAliasPreferenceChange(entry.key,event.target.value||'');
+        });
         const input=document.createElement('input');
         input.type='color';
         input.id=inputId;
@@ -3867,7 +4002,9 @@
           });
         }
         item.appendChild(label);
-        item.appendChild(input);
+        controls.appendChild(aliasInput);
+        controls.appendChild(input);
+        item.appendChild(controls);
         grid.appendChild(item);
       });
       appearanceControls.appendChild(grid);
@@ -5402,6 +5539,47 @@
       event.preventDefault();
     }
 
+    function handleLineWheel(event){
+      if(!lineChartShell || lineChartShell.hidden) return;
+      if(!(event.target instanceof Element)) return;
+      const inTrack=event.target.closest('.line-row-track') || (lineChartAxis && lineChartAxis.contains(event.target));
+      if(!inTrack) return;
+      const absX=Math.abs(event.deltaX||0);
+      const absY=Math.abs(event.deltaY||0);
+      if(absX===0 && absY===0) return;
+      if(absX<absY) return;
+      const metrics=getLineTrackMetrics();
+      if(!metrics || !metrics.width) return;
+      const minutesDelta=((event.deltaX||0)/metrics.width)*lineViewState.windowMinutes;
+      const maxStart=Math.max(0,1440-lineViewState.windowMinutes);
+      const rawStart=lineViewState.startMinute+minutesDelta;
+      if(maxStart>0){
+        let dayShift=0;
+        let normalizedStart=rawStart;
+        while(normalizedStart>maxStart){
+          normalizedStart-=1440;
+          dayShift+=1;
+        }
+        while(normalizedStart<0){
+          normalizedStart+=1440;
+          dayShift-=1;
+        }
+        if(dayShift!==0){
+          const moved=shiftLineViewDayAndWeek(dayShift,normalizedStart);
+          if(moved){
+            event.preventDefault();
+            return;
+          }
+        }
+      }
+      const newStart=clampLineViewStart(rawStart,lineViewState.windowMinutes);
+      if(newStart!==lineViewState.startMinute){
+        lineViewState.startMinute=newStart;
+        drawCurrentLineChart();
+      }
+      event.preventDefault();
+    }
+
     function handleLinePointerUp(event){
       if(lineChartShell && lineChartShell.hasPointerCapture(event.pointerId)){
         lineChartShell.releasePointerCapture(event.pointerId);
@@ -5433,6 +5611,7 @@
       lineChartShell.addEventListener('pointerup',handleLinePointerUp);
       lineChartShell.addEventListener('pointercancel',handleLinePointerUp);
       lineChartShell.addEventListener('lostpointercapture',handleLinePointerUp);
+      lineChartShell.addEventListener('wheel',handleLineWheel,{passive:false});
     }
 
     function handleLineViewportChange(){

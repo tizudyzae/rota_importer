@@ -515,6 +515,35 @@
       return stripped||fallbackLabel;
     }
 
+    const nameSortCollator=typeof Intl!=='undefined' && typeof Intl.Collator==='function'
+      ?new Intl.Collator(undefined,{sensitivity:'base',numeric:true})
+      :null;
+
+    function compareDisplayNames(a,b){
+      const left=(a||'').trim();
+      const right=(b||'').trim();
+      if(nameSortCollator){
+        return nameSortCollator.compare(left,right);
+      }
+      return left.localeCompare(right,undefined,{sensitivity:'base',numeric:true});
+    }
+
+    function resolveEntrySortName(entry,lookup){
+      return resolveEntryDisplayName(entry,lookup) || '';
+    }
+
+    function sortEntriesByDisplayName(entries,lookup){
+      const list=Array.isArray(entries)?entries.filter(Boolean):[];
+      return list.slice().sort((a,b)=>{
+        const nameDiff=compareDisplayNames(resolveEntrySortName(a,lookup),resolveEntrySortName(b,lookup));
+        if(nameDiff!==0) return nameDiff;
+        const aStart=buildRowSortKey(a);
+        const bStart=buildRowSortKey(b);
+        if(aStart!==bStart) return aStart-bStart;
+        return 0;
+      });
+    }
+
     function resolveDisplayNameForIndex(model,index){
       if(!model || !Array.isArray(model.rows) || !Number.isInteger(index)) return `Colleague ${index+1}`;
       const record=lastIndividuals.find(rec=>rec.index===index);
@@ -1085,6 +1114,57 @@
         return Promise.resolve(window.pdfjsLib);
       }
       return Promise.reject(new Error('PDF.js library has not finished loading.'));
+    }
+
+    let pdfLibReadyPromise=null;
+    function ensurePdfLib(){
+      if(typeof window==='undefined'){
+        return Promise.reject(new Error('PDF generator is not available in this environment.'));
+      }
+      if(window.PDFLib){
+        return Promise.resolve(window.PDFLib);
+      }
+      if(pdfLibReadyPromise){
+        return pdfLibReadyPromise;
+      }
+      pdfLibReadyPromise=new Promise((resolve,reject)=>{
+        const existing=Array.from(document.querySelectorAll('script[src]')).find(script=>{
+          const src=script.getAttribute('src')||'';
+          return src.includes('pdf-lib.min.js');
+        });
+        const handleReady=()=>{
+          if(window.PDFLib){
+            resolve(window.PDFLib);
+            return true;
+          }
+          return false;
+        };
+        if(handleReady()) return;
+        const scriptEl=existing||document.createElement('script');
+        const onLoad=()=>{
+          cleanup();
+          if(handleReady()) return;
+          reject(new Error('PDF generator loaded but did not initialise correctly.'));
+        };
+        const onError=()=>{
+          cleanup();
+          reject(new Error('Failed to load PDF generator library.'));
+        };
+        const cleanup=()=>{
+          scriptEl.removeEventListener('load',onLoad);
+          scriptEl.removeEventListener('error',onError);
+        };
+        scriptEl.addEventListener('load',onLoad,{once:true});
+        scriptEl.addEventListener('error',onError,{once:true});
+        if(!existing){
+          scriptEl.src=new URL('./pdf-lib.min.js',window.location.href).toString();
+          document.head.appendChild(scriptEl);
+        }
+      }).catch(err=>{
+        pdfLibReadyPromise=null;
+        throw err;
+      });
+      return pdfLibReadyPromise;
     }
 
     function sanitizePdfCellText(text){
@@ -2614,8 +2694,7 @@
         lineChartRows.appendChild(empty);
         return;
       }
-      const sortedEntries=[...entries];
-      sortedEntries.sort((a,b)=>buildRowSortKey(a)-buildRowSortKey(b));
+      const sortedEntries=sortEntriesByDisplayName(entries,lineViewCurrentLookup);
       const filteredEntries=[];
       let hiddenCount=0;
       let totalRenderable=0;
@@ -3304,11 +3383,7 @@
           empty.textContent='No scheduled colleagues';
           shiftList.appendChild(empty);
         }else{
-          const sorted=scheduledEntries.slice().sort((a,b)=>{
-            const aStart=a && a.range?a.range.start:Infinity;
-            const bStart=b && b.range?b.range.start:Infinity;
-            return aStart-bStart;
-          });
+          const sorted=sortEntriesByDisplayName(scheduledEntries,lookup);
           sorted.forEach(entry=>{
             const item=document.createElement('article');
             item.className='shift-card';
@@ -3398,6 +3473,7 @@
       const dateOrder=(week.metadata && week.metadata.dateOrder)||inferDateOrder(dayHeaders,model);
         const formattedDates=dayHeaders.map(label=>formatFullDayLabel(label,dateOrder));
       const dateRangeLabel=resolveDateRangeLabelForWeek(model,week.metadata,layout);
+      const lookup=buildDisplayNameLookup(model);
       const selectionRecords=allowIndividual?getSelectionRecords(model):[];
       const selectedRows=selectionRecords.map(item=>item.row);
       const perDayForPreview=selectedRows.length?filterPerDayEntries(perDay,selectedRows):perDay;
@@ -3430,7 +3506,7 @@
         return;
       }
       dayHeaders.forEach((label,idx)=>{
-        const rows=perDayForPreview[idx]||[];
+        const rows=sortEntriesByDisplayName(perDayForPreview[idx]||[],lookup);
         drawDayCard(sheets,label,rows,{
           dateRangeLabel,
           pageNumber:idx+1,
@@ -3505,8 +3581,9 @@
       const model=week.model;
       const rows=Array.isArray(model.rows)?model.rows:[];
       const options=['<option value="all">All colleagues</option>'];
-      rows.forEach((row,idx)=>{
-        const display=getRowDisplayName(row,idx+1);
+      const sortedRows=rows.map((row,idx)=>({row,idx,display:getRowDisplayName(row,idx+1)}));
+      sortedRows.sort((a,b)=>compareDisplayNames(a.display,b.display));
+      sortedRows.forEach(({row,idx,display})=>{
         options.push(`<option value="${idx}">${display}</option>`);
         lastIndividuals.push({index:idx,displayName:display,rawName:row.rawName,name:row.name});
       });
@@ -3671,14 +3748,11 @@
         alert('The selected week is unavailable.');
         return;
       }
-      if(!window.PDFLib){
-        alert('PDF generator failed to load. Please refresh and try again.');
-        return;
-      }
       const originalLabel=btn.textContent;
       btn.disabled=true;
       btn.textContent='Exporting…';
       try{
+        await ensurePdfLib();
         const layout=currentLayout || DEFAULT_LAYOUT;
         const palette=buildPdfPalette(layout);
         const {PDFDocument,rgb,StandardFonts}=window.PDFLib;
@@ -3689,6 +3763,7 @@
         const model=week.model;
         const perDay=Array.isArray(week.perDay)?week.perDay:[];
         const dayHeaders=Array.isArray(model.dayHeaders)?model.dayHeaders:[];
+        const lookup=buildDisplayNameLookup(model);
         const selectionRecords=getSelectionRecords(model);
         const selectedRows=selectionRecords.map(item=>item.row);
         const filteredPerDay=selectedRows.length?filterPerDayEntries(perDay,selectedRows):perDay;
@@ -3698,7 +3773,7 @@
         const formattedDates=dayHeaders.map(label=>formatFullDayLabel(label,dateOrder));
         const dateRangeLabel=resolveDateRangeLabelForWeek(model,week.metadata,layout);
         dayHeaders.forEach((label,idx)=>{
-          const rows=filteredPerDay[idx]||[];
+          const rows=sortEntriesByDisplayName(filteredPerDay[idx]||[],lookup);
           const footerText=formatFooterText(layout.footerTemplate,{
             pageNumber,
             totalPages,
@@ -3760,10 +3835,6 @@
         alert('Select a colleague before exporting.');
         return;
       }
-      if(!window.PDFLib){
-        alert('PDF generator failed to load. Please refresh and try again.');
-        return;
-      }
       const person=model.rows[idx];
       const record=lastIndividuals.find(rec=>rec.index===idx);
       const baseName=getRowDisplayName(person,idx+1);
@@ -3809,6 +3880,7 @@
       btn.disabled=true;
       btn.textContent='Exporting…';
       try{
+        await ensurePdfLib();
         const {PDFDocument,rgb,StandardFonts}=window.PDFLib;
         const pdfDoc=await PDFDocument.create();
         const fontRegular=await pdfDoc.embedFont(StandardFonts.Helvetica);

@@ -3286,8 +3286,10 @@
       const weekId=week.id||'week';
       if(weekId!==lineViewLastWeekId){
         lineViewLastWeekId=weekId;
-        lineViewStateInitialized=false;
-        lineViewUserSelectedDay=false;
+        if(!lineViewCarryAcrossWeekChange){
+          lineViewStateInitialized=false;
+          lineViewUserSelectedDay=false;
+        }
       }
       if(!lineViewUserSelectedDay){
         const dateOrder=(week.metadata && week.metadata.dateOrder)||inferDateOrder(dayHeaders,model);
@@ -3306,7 +3308,9 @@
       }
       if(lineViewLastDayIndex!==lineViewState.dayIndex){
         lineViewLastDayIndex=lineViewState.dayIndex;
-        lineViewStateInitialized=false;
+        if(!lineViewCarryAcrossDayChange){
+          lineViewStateInitialized=false;
+        }
       }
       const dayLabels=perDay.map((_,idx)=>dayHeaders[idx]||`Day ${idx+1}`);
       const entries=Array.isArray(filteredPerDay[lineViewState.dayIndex])?filteredPerDay[lineViewState.dayIndex]:[];
@@ -3323,6 +3327,8 @@
       lineViewCurrentEntries=entries;
       lineViewCurrentLookup=buildDisplayNameLookup(model);
       lineViewCurrentDayLabel=dayLabels[lineViewState.dayIndex]||`Day ${lineViewState.dayIndex+1}`;
+      lineViewCarryAcrossDayChange=false;
+      lineViewCarryAcrossWeekChange=false;
       syncLineViewControls(dayLabels);
       if(lineWindowHint){
         lineWindowHint.hidden=false;
@@ -5102,6 +5108,82 @@
     let lineViewDrag=null;
     const lineViewPointers=new Map();
     let lineViewPinch=null;
+    let lineViewCarryAcrossDayChange=false;
+    let lineViewCarryAcrossWeekChange=false;
+
+    function getChronologicalWeekRecords(){
+      return getSortedWeekRecords().slice().sort((a,b)=>{
+        const aStart=(a && a.metadata && typeof a.metadata.startIso==='string')?a.metadata.startIso:'';
+        const bStart=(b && b.metadata && typeof b.metadata.startIso==='string')?b.metadata.startIso:'';
+        if(aStart && bStart && aStart!==bStart){
+          return aStart<bStart?-1:1;
+        }
+        const aStored=Number.isFinite(a && a.storedAt)?a.storedAt:0;
+        const bStored=Number.isFinite(b && b.storedAt)?b.storedAt:0;
+        return aStored-bStored;
+      });
+    }
+
+    function getWeekDayCountById(weekId){
+      if(typeof weekId!=='string') return 7;
+      const week=cachedWeeks.get(weekId);
+      const perDay=Array.isArray(week && week.perDay)?week.perDay:[];
+      return Math.max(1,perDay.length||7);
+    }
+
+    function shiftLineViewDayAndWeek(dayOffset,nextStartMinute){
+      if(!Number.isInteger(dayOffset) || dayOffset===0) return false;
+      const currentWeekId=activeWeekIds[0];
+      if(!currentWeekId) return false;
+      const timeline=getChronologicalWeekRecords();
+      const weekIndex=timeline.findIndex(record=>record && record.id===currentWeekId);
+      if(weekIndex===-1) return false;
+      let targetWeekIndex=weekIndex;
+      let targetWeekId=currentWeekId;
+      let targetDayIndex=(Number.isInteger(lineViewState.dayIndex)?lineViewState.dayIndex:0)+dayOffset;
+      let targetWeekDayCount=getWeekDayCountById(targetWeekId);
+
+      while(targetDayIndex>=targetWeekDayCount && targetWeekIndex<timeline.length-1){
+        targetDayIndex-=targetWeekDayCount;
+        targetWeekIndex+=1;
+        targetWeekId=timeline[targetWeekIndex].id;
+        targetWeekDayCount=getWeekDayCountById(targetWeekId);
+      }
+      while(targetDayIndex<0 && targetWeekIndex>0){
+        targetWeekIndex-=1;
+        targetWeekId=timeline[targetWeekIndex].id;
+        targetWeekDayCount=getWeekDayCountById(targetWeekId);
+        targetDayIndex+=targetWeekDayCount;
+      }
+
+      const atForwardBoundary=targetDayIndex>=targetWeekDayCount && targetWeekIndex===timeline.length-1;
+      const atBackwardBoundary=targetDayIndex<0 && targetWeekIndex===0;
+      if(atForwardBoundary || atBackwardBoundary){
+        return false;
+      }
+
+      const weekChanged=targetWeekId!==currentWeekId;
+      const dayChanged=targetDayIndex!==lineViewState.dayIndex || weekChanged;
+      if(!dayChanged) return false;
+
+      lineViewState.dayIndex=Math.max(0,Math.min(targetWeekDayCount-1,targetDayIndex));
+      if(Number.isFinite(nextStartMinute)){
+        lineViewState.startMinute=clampLineViewStart(nextStartMinute,lineViewState.windowMinutes);
+      }
+      lineViewUserSelectedDay=true;
+
+      if(weekChanged){
+        lineViewCarryAcrossWeekChange=true;
+        lineViewCarryAcrossDayChange=true;
+        setActiveWeeks([targetWeekId],{persist:true});
+        updateWeekSelectionUI();
+      }else{
+        lineViewCarryAcrossDayChange=true;
+      }
+
+      renderLineView(getActiveWeekData());
+      return true;
+    }
 
     function getLineTrackMetrics(){
       if(!lineChartRows) return null;
@@ -5216,7 +5298,32 @@
       }
       if(!lineViewDrag || lineViewDrag.intent!=='horizontal') return;
       const minutesDelta=(deltaX/lineViewDrag.trackWidth)*lineViewState.windowMinutes;
-      const newStart=clampLineViewStart(lineViewDrag.startMinute-minutesDelta,lineViewState.windowMinutes);
+      const maxStart=Math.max(0,1440-lineViewState.windowMinutes);
+      const rawStart=lineViewDrag.startMinute-minutesDelta;
+      if(maxStart>0){
+        let dayShift=0;
+        let normalizedStart=rawStart;
+        while(normalizedStart>maxStart){
+          normalizedStart-=maxStart;
+          dayShift+=1;
+        }
+        while(normalizedStart<0){
+          normalizedStart+=maxStart;
+          dayShift-=1;
+        }
+        if(dayShift!==0){
+          const moved=shiftLineViewDayAndWeek(dayShift,normalizedStart);
+          if(moved){
+            lineViewDrag.startMinute=lineViewState.startMinute;
+            lineViewDrag.startX=event.clientX;
+            lineViewDrag.startY=event.clientY;
+            lineViewDrag.trackWidth=getLineTrackMetrics()?.width||lineViewDrag.trackWidth;
+            event.preventDefault();
+            return;
+          }
+        }
+      }
+      const newStart=clampLineViewStart(rawStart,lineViewState.windowMinutes);
       if(newStart!==lineViewState.startMinute){
         lineViewState.startMinute=newStart;
         drawCurrentLineChart();

@@ -120,8 +120,14 @@
     .ctrl small{color:var(--muted);font-size:12px}
     .ctrl-inline{display:flex;gap:10px;align-items:center;font-size:13px;color:var(--muted)}
     .row{display:flex;gap:10px;align-items:center;color:var(--muted);font-size:13px}
-    .selection-actions{display:flex;flex-direction:column;gap:10px}
+    .selection-actions{display:flex;flex-wrap:wrap;gap:10px}
     .selection-actions .btn{width:100%}
+    .selection-actions .btn{flex:1 1 120px}
+    .report-scope-pills{display:flex;flex-wrap:wrap;gap:8px;max-height:220px;overflow:auto;padding:2px}
+    .report-scope-pill{appearance:none;border:1px solid var(--border);background:var(--surface-soft);color:var(--muted);border-radius:999px;padding:8px 12px;font-size:13px;font-weight:700;cursor:pointer;transition:all .2s ease}
+    .report-scope-pill:hover{background:var(--accent-soft);color:var(--accent)}
+    .report-scope-pill.active{background:var(--accent);border-color:var(--accent);color:#fff;box-shadow:0 10px 20px rgba(0,123,195,.18)}
+    .report-scope-pill:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
     .viewer{display:flex;flex-direction:column;gap:20px}
     .viewer-tabs{display:flex;gap:12px;flex-wrap:wrap;background:var(--surface);padding:12px;border-radius:24px;box-shadow:0 14px 30px rgba(9,42,58,.08);position:sticky;top:0;z-index:10}
     .viewer-tab{appearance:none;border:1px solid rgba(0,0,0,.04);border-radius:999px;padding:clamp(10px,2vw,14px) clamp(12px,5vw,24px);font-size:clamp(12px,3vw,15px);font-weight:700;background:transparent;color:var(--muted);cursor:pointer;transition:all .2s ease;box-shadow:none;flex:1 1 150px;min-width:0;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -407,11 +413,13 @@
           <p class="saved-week-meta" id="savedWeekMeta" hidden></p>
           <label class="ctrl" for="selIndividual" id="reportScopeControl" hidden aria-hidden="true">
             <span>Report scope</span>
-            <select id="selIndividual" multiple disabled aria-describedby="reportScopeHint">
+            <select id="selIndividual" multiple disabled aria-describedby="reportScopeHint" hidden>
               <option value="all">All colleagues</option>
             </select>
+            <div class="report-scope-pills" id="reportScopePills" role="group" aria-label="Report scope colleagues"></div>
           </label>
       <div class="selection-actions" id="selectionActions" hidden aria-hidden="true">
+        <button class="btn btn-secondary" id="btnAllColleagues" type="button">All colleagues</button>
         <button class="btn btn-secondary" id="btnManagementShortcut" type="button">Management</button>
         <button class="btn btn-secondary" id="btnClearSelection" type="button">Clear selection</button>
       </div>
@@ -2324,6 +2332,8 @@
     const selectionActions=document.getElementById('selectionActions');
     const btnClearSelection=document.getElementById('btnClearSelection');
     const btnManagementShortcut=document.getElementById('btnManagementShortcut');
+    const btnAllColleagues=document.getElementById('btnAllColleagues');
+    const reportScopePills=document.getElementById('reportScopePills');
     const appearanceControls=document.getElementById('appearanceControls');
 
     if(Array.isArray(linePresetButtonList) && linePresetButtonList.length){
@@ -2388,11 +2398,17 @@
       return MANAGEMENT_SHORTCUT_NAMES.some(name=>candidate.includes(name));
     }
 
-    function resolveLineCoverageWarningMode(selectionRecords){
+    function resolveLineCoverageWarningMode(selectionRecords,model){
       const records=Array.isArray(selectionRecords)?selectionRecords.filter(Boolean):[];
       if(!records.length) return 'all';
-      const allManagement=records.every(item=>isManagementRow(item.row));
-      if(allManagement) return 'management';
+      const rows=Array.isArray(model && model.rows)?model.rows:[];
+      const totalManagementCount=rows.filter(row=>isManagementRow(row)).length;
+      if(!totalManagementCount) return 'none';
+      const selectedManagementCount=records.filter(item=>isManagementRow(item.row)).length;
+      const selectedOnlyManagement=records.every(item=>isManagementRow(item.row));
+      if(selectedOnlyManagement && selectedManagementCount===totalManagementCount){
+        return 'management';
+      }
       return 'none';
     }
 
@@ -2416,9 +2432,8 @@
 
     function clampLineViewStart(value,windowMinutes){
       if(!Number.isFinite(value)) value=0;
-      const snapped=Math.round(value/LINE_VIEW_STEP)*LINE_VIEW_STEP;
       const maxStart=Math.max(0,1440-windowMinutes);
-      return Math.max(0,Math.min(maxStart,snapped));
+      return Math.max(0,Math.min(maxStart,value));
     }
 
     function applyLineViewPresetRange(startMinute,endMinute){
@@ -3248,7 +3263,7 @@
       const selectionRecords=getSelectionRecords(model);
       const selectedRows=selectionRecords.map(item=>item.row);
       const selectionCount=selectionRecords.length;
-      lineCoverageWarningMode=resolveLineCoverageWarningMode(selectionRecords);
+      lineCoverageWarningMode=resolveLineCoverageWarningMode(selectionRecords,model);
       const filteredPerDay=filterPerDayEntries(perDay,selectedRows);
       const dateRangeLabel=resolveDateRangeLabelForWeek(model,week.metadata,layout) || '';
       if(selectionCount===1){
@@ -3661,6 +3676,27 @@
       renderWeekPdfPreview(sheets,week,{allowIndividual:true,showHeading:false});
     }
 
+
+    function syncReportScopePills(){
+      if(!reportScopePills || !selIndividual) return;
+      const options=Array.from(selIndividual.options||[]).filter(opt=>opt.value!=='all');
+      reportScopePills.innerHTML='';
+      if(!options.length){
+        reportScopePills.setAttribute('aria-hidden','true');
+        return;
+      }
+      options.forEach(opt=>{
+        const pill=document.createElement('button');
+        pill.type='button';
+        pill.className=`report-scope-pill${opt.selected?' active':''}`;
+        pill.dataset.indexValue=opt.value;
+        pill.setAttribute('aria-pressed',opt.selected?'true':'false');
+        pill.textContent=opt.textContent||`Colleague ${opt.value}`;
+        reportScopePills.appendChild(pill);
+      });
+      reportScopePills.setAttribute('aria-hidden','false');
+    }
+
     function updateIndividualControls(weeks){
       const select=document.getElementById('selIndividual');
       const btn=document.getElementById('btnExport');
@@ -3686,6 +3722,7 @@
       lastIndividuals=[];
       if(!hasWeeks){
         select.innerHTML='<option value="all">All colleagues</option>';
+        syncReportScopePills();
         select.multiple=true;
         select.disabled=true;
         btn.disabled=true;
@@ -3700,6 +3737,9 @@
         }
         if(btnManagementShortcut){
           btnManagementShortcut.disabled=true;
+        }
+        if(btnAllColleagues){
+          btnAllColleagues.disabled=true;
         }
         return;
       }
@@ -3739,6 +3779,7 @@
         btnLabel='Export filtered PDF';
       }
       btn.textContent=btnLabel;
+      syncReportScopePills();
       if(selectionActions){
         const showActions=rows.length>0;
         selectionActions.hidden=!showActions;
@@ -3746,6 +3787,9 @@
       }
       if(btnClearSelection){
         btnClearSelection.disabled=!rows.length || !currentIndividualSelection.length;
+      }
+      if(btnAllColleagues){
+        btnAllColleagues.disabled=!rows.length || !currentIndividualSelection.length;
       }
       if(btnManagementShortcut){
         const normalizedTargets=MANAGEMENT_SHORTCUT_NAMES;
@@ -4963,6 +5007,24 @@
       syncSettingsPanel();
     });
     const selIndividual=document.getElementById('selIndividual');
+    if(reportScopePills){
+      reportScopePills.addEventListener('click',event=>{
+        const pill=event.target instanceof Element?event.target.closest('button[data-index-value]'):null;
+        if(!pill || !selIndividual) return;
+        const value=pill.getAttribute('data-index-value')||'';
+        const idx=parseInt(value,10);
+        if(!Number.isInteger(idx)) return;
+        const next=new Set(currentIndividualSelection);
+        if(next.has(idx)){
+          next.delete(idx);
+        }else{
+          next.add(idx);
+        }
+        setCurrentIndividualSelection(Array.from(next));
+        renderViews();
+      });
+    }
+
     if(selIndividual){
       selIndividual.addEventListener('change',()=>{
         const options=Array.from(selIndividual.options||[]);
@@ -4989,6 +5051,14 @@
     if(btnClearSelection){
       btnClearSelection.addEventListener('click',()=>{
         if(btnClearSelection.disabled) return;
+        setCurrentIndividualSelection([]);
+        renderViews();
+      });
+    }
+
+    if(btnAllColleagues){
+      btnAllColleagues.addEventListener('click',()=>{
+        if(btnAllColleagues.disabled) return;
         setCurrentIndividualSelection([]);
         renderViews();
       });
@@ -5303,12 +5373,13 @@
       if(maxStart>0){
         let dayShift=0;
         let normalizedStart=rawStart;
+        const daySpan=1440;
         while(normalizedStart>maxStart){
-          normalizedStart-=maxStart;
+          normalizedStart-=daySpan;
           dayShift+=1;
         }
         while(normalizedStart<0){
-          normalizedStart+=maxStart;
+          normalizedStart+=daySpan;
           dayShift-=1;
         }
         if(dayShift!==0){

@@ -1,0 +1,99 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Upload {{ upload.id }} - Rota PDF Importer</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 1600px;
+      margin: 2rem auto;
+      padding: 0 1rem;
+      background: #ffffff;
+      color: #111111;
+    }
+    h1, h2, p, th, td, a { color: #111111; }
+    .box {
+      border: 1px solid #ddd;
+      padding: 1rem;
+      border-radius: 8px;
+      background: #ffffff;
+      margin-bottom: 1.5rem;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: #ffffff;
+      margin-top: 1rem;
+      font-size: 0.92rem;
+    }
+    th, td {
+      border: 1px solid #ccc;
+      padding: 0.45rem;
+      text-align: left;
+      vertical-align: top;
+    }
+    th { background: #f2f2f2; }
+    a.button {
+      display: inline-block;
+      padding: 0.6rem 1rem;
+      border: 1px solid #0078d4;
+      border-radius: 8px;
+      background: #0078d4;
+      color: #ffffff;
+      text-decoration: none;
+      margin-right: 0.75rem;
+    }
+    a.button:hover { background: #005ea6; }
+  </style>
+</head>
+<body>
+  <h1>Upload {{ upload.id }}</h1>
+
+  <div class="box">
+    <p><strong>Filename:</strong> {{ upload.original_filename }}</p>
+    <p><strong>Uploaded:</strong> {{ upload.uploaded_at }}</p>
+    <p>
+      <a class="button" href="{{ ingress_path }}/export/{{ upload.id }}">Download CSV</a>
+      <a class="button" href="{{ ingress_path }}/">Back</a>
+    </p>
+  </div>
+
+  <div class="box">
+    <h2>Normalized shift rows</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Employee</th>
+          <th>Date</th>
+          <th>Day Header</th>
+          <th>Start</th>
+          <th>End</th>
+          <th>Total Hours</th>
+          <th>Raw Cell</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for row in rows %}
+        <tr>
+          <td>{{ row.row_index }}</td>
+          <td>{{ row.employee }}</td>
+          <td>{{ row.shift_date }}</td>
+          <td>{{ row.day_header }}</td>
+          <td>{{ row.start_time }}</td>
+          <td>{{ row.end_time }}</td>
+          <td>{{ row.total_hours }}</td>
+          <td>{{ row.raw_cell }}</td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="8">No parsed rows found.</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</body>
+</html>

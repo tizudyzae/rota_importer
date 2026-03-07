@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>CSV Rota Viewer – Help</title>
+  <style>
+    :root {
+      --page-bg:#f5f7fb;
+      --ink:#041529;
+      --muted:#516275;
+      --accent:#00a6d6;
+      --surface:#ffffff;
+      --surface-soft:#ecf3fb;
+      --border:#d6e1ea;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font:16px/1.6 "Averta Std","Nunito Sans","Helvetica Neue",Helvetica,Arial,sans-serif;color:var(--ink);background:var(--page-bg);}
+    .wrap{max-width:960px;margin:0 auto;padding:32px 20px 60px;display:flex;flex-direction:column;gap:32px}
+    header{display:flex;flex-direction:column;gap:12px}
+    h1{margin:0;font-size:36px;letter-spacing:-.01em}
+    p{margin:0;color:var(--muted)}
+    .back-link{align-self:flex-start;text-decoration:none;color:var(--accent);font-weight:700;display:inline-flex;align-items:center;gap:6px}
+    .panel{background:var(--surface);border-radius:28px;padding:28px;border:1px solid var(--border);box-shadow:0 18px 36px rgba(6,28,46,.08);display:flex;flex-direction:column;gap:18px}
+    .panel h2{margin:0;font-size:22px}
+    .panel p{margin:0}
+    .steps{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:16px}
+    .step{background:var(--surface);border-radius:20px;padding:20px;border:1px solid rgba(6,28,46,.08);box-shadow:0 12px 24px rgba(6,28,46,.06);display:flex;flex-direction:column;gap:10px}
+    .step span{font-size:13px;font-weight:700;text-transform:uppercase;letter-spacing:.16em;color:var(--accent)}
+    .step strong{font-size:18px}
+    .screenshot{border-radius:20px;background:linear-gradient(135deg,#c8e8ff,#f5f7fb);padding:18px;display:flex;flex-direction:column;gap:10px;border:1px dashed rgba(6,28,46,.2)}
+    .screenshot::before{content:"Screenshot";font-size:12px;font-weight:700;letter-spacing:.2em;text-transform:uppercase;color:rgba(6,28,46,.5)}
+    ul{margin:0;padding-left:20px;color:var(--muted)}
+    .faq{display:flex;flex-direction:column;gap:18px}
+    .faq dt{font-weight:700;color:var(--ink)}
+    .faq dd{margin:0 0 12px;color:var(--muted)}
+    @media (max-width:600px){
+      h1{font-size:30px}
+      .panel{padding:22px}
+      .wrap{padding:24px 16px 40px}
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <a class="back-link" href="index.html">← Back to the viewer</a>
+      <h1>Help & onboarding</h1>
+      <p>This companion page explains the workflow that used to sit in the hero cards. Bookmark it for screenshots, privacy notes, and PDF export tips.</p>
+    </header>
+
+    <section class="steps" aria-label="Quick start">
+      <article class="step">
+        <span>Step 1</span>
+        <strong>Drop a CSV</strong>
+        <p>Use the Upload CSV button or drag a file anywhere on the viewer. The app caches the week locally so you can reopen it offline.</p>
+      </article>
+      <article class="step">
+        <span>Step 2</span>
+        <strong>Filter colleagues</strong>
+        <p>Select individuals or tap the management preset. Every preview—schedule, line, and PDF—honors the same selection.</p>
+      </article>
+      <article class="step">
+        <span>Step 3</span>
+        <strong>Share polished sheets</strong>
+        <p>When you are satisfied, export the PDF layouts. They mirror the existing reports, making handover painless.</p>
+      </article>
+    </section>
+
+    <section class="panel">
+      <h2>Uploading a rota</h2>
+      <div class="screenshot" aria-label="Upload illustration">
+        <p>Drop your CSV anywhere or use the floating Upload CSV button at the top of the main page.</p>
+        <p>The viewer validates headers instantly and stores the parsed data in <code>localStorage</code> only on your device.</p>
+      </div>
+      <ul>
+        <li>Supported files follow the Mobile Rota export with comma-separated rows.</li>
+        <li>No data ever leaves the browser—ideal for GDPR-sensitive schedules.</li>
+        <li>Need to reset? Open the Saved weeks panel and clear cached entries.</li>
+      </ul>
+    </section>
+
+    <section class="panel">
+      <h2>Filtering the view</h2>
+      <div class="screenshot" aria-label="Filtering illustration">
+        <p>Use the Report scope list to toggle individuals. Keyboard shortcuts (Shift/Command) let you select multiple rows quickly.</p>
+        <p>The management preset highlights leads instantly when you tap it.</p>
+      </div>
+      <ul>
+        <li>The schedule grid, condensed line chart, and PDF preview stay in sync.</li>
+        <li>Focus mode keeps exports tight—no unnecessary personal data.</li>
+        <li>Use the appearance controls to tweak highlight colors before exporting.</li>
+      </ul>
+    </section>
+
+    <section class="panel">
+      <h2>Exporting PDFs</h2>
+      <div class="screenshot" aria-label="PDF illustration">
+        <p>Choose “PDF preview” inside the viewer to stage the layout, then press <strong>Export PDF</strong>.</p>
+        <p>The pdf-lib integration converts the SVG into landscape pages that managers already recognize.</p>
+      </div>
+      <ul>
+        <li>Exports respect the current selection (entire week or focused colleague).</li>
+        <li>Print-ready pages land in your downloads folder within a second.</li>
+        <li>Use the system share sheet on mobile to hand over via Mail, WhatsApp, or Teams.</li>
+      </ul>
+    </section>
+
+    <dl class="faq">
+      <dt>Why move the guidance here?</dt>
+      <dd>Keeping the main viewer minimal lets you focus on the data. This help hub now houses the narrative, screenshots, and compliance notes.</dd>
+      <dt>Is my data private?</dt>
+      <dd>Yes. The viewer never uploads anything; it stores schedules locally using <code>localStorage</code>. Clearing cached weeks removes every trace.</dd>
+      <dt>Need support?</dt>
+      <dd>Open an issue on the project repository or ping your engineering contact with the CSV you are trying to load.</dd>
+    </dl>
+  </div>
+</body>
+</html>

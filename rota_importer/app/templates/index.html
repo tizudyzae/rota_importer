@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Rota PDF Importer</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      max-width: 1100px;
+      margin: 2rem auto;
+      padding: 0 1rem;
+      background: #ffffff;
+      color: #111111;
+    }
+    h1, h2 { margin-bottom: 0.5rem; color: #111111; }
+    p, label, th, td, a { color: #111111; }
+    form, table { margin-top: 1rem; }
+    table { width: 100%; border-collapse: collapse; background: #ffffff; }
+    th, td { border: 1px solid #ccc; padding: 0.5rem; text-align: left; }
+    th { background: #f2f2f2; }
+    .box {
+      border: 1px solid #ddd;
+      padding: 1rem;
+      border-radius: 8px;
+      background: #ffffff;
+      margin-bottom: 1.5rem;
+    }
+    .actions a {
+      margin-right: 0.75rem;
+      text-decoration: none;
+      color: #0066cc;
+      font-weight: bold;
+    }
+    .actions a:hover { text-decoration: underline; }
+    input[type="file"] {
+      margin-right: 0.75rem;
+      color: #111111;
+      background: #ffffff;
+    }
+    button[type="submit"] {
+      padding: 0.6rem 1rem;
+      border: 1px solid #0078d4;
+      border-radius: 8px;
+      background: #0078d4;
+      color: #ffffff;
+      cursor: pointer;
+      font-size: 1rem;
+    }
+    button[type="submit"]:hover { background: #005ea6; }
+  </style>
+</head>
+<body>
+  <h1>Rota PDF Importer</h1>
+  <p>Upload a rota PDF, parse shift times, and export CSV.</p>
+
+  <div class="box">
+    <h2>Upload PDF</h2>
+    <form action="{{ ingress_path }}/upload" method="post" enctype="multipart/form-data">
+      <input type="file" name="file" accept="application/pdf" required>
+      <button type="submit">Upload and parse</button>
+    </form>
+  </div>
+
+  <div class="box">
+    <h2>Previous uploads</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>ID</th>
+          <th>Filename</th>
+          <th>Uploaded</th>
+          <th>Rows</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for upload in uploads %}
+        <tr>
+          <td>{{ upload.id }}</td>
+          <td>{{ upload.original_filename }}</td>
+          <td>{{ upload.uploaded_at }}</td>
+          <td>{{ upload.row_count }}</td>
+          <td class="actions">
+            <a href="{{ ingress_path }}/upload/{{ upload.id }}">View</a>
+            <a href="{{ ingress_path }}/export/{{ upload.id }}">CSV</a>
+          </td>
+        </tr>
+        {% else %}
+        <tr>
+          <td colspan="5">No uploads yet.</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</body>
+</html>

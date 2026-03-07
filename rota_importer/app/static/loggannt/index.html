@@ -347,7 +347,6 @@
     <h2 class="panel-title">Saved weeks</h2>
     <p class="control-hint">Upload new schedules and manage the saved weeks stored on this device.</p>
     <input type="file" id="fileInput" accept=".csv,text/csv" class="visually-hidden">
-    <input type="file" id="pdfInput" accept="application/pdf" class="visually-hidden">
     <div class="saved-week-actions">
       <button class="btn btn-secondary" id="btnUpload" type="button">Upload CSV</button>
     </div>
@@ -356,39 +355,6 @@
       <button class="btn btn-secondary" id="btnClearWeeks" type="button">Clear saved weeks</button>
     </div>
     <div id="appearanceControls" class="appearance-controls" hidden aria-hidden="true" role="group"></div>
-    <details class="panel" id="testingPanel">
-      <summary>Testing</summary>
-      <div class="panel-body">
-        <div class="saved-week-actions">
-          <button class="btn btn-secondary" id="btnUploadPdf" type="button">Upload PDF</button>
-        </div>
-        <p class="control-hint">Upload a PDF rota to test parsing improvements. Debug output stays on this device, and CSV uploads remain the most reliable option.</p>
-        <label class="ctrl" for="pdfParseMode">
-          <span>PDF interpretation</span>
-          <select id="pdfParseMode">
-            <option value="balanced">Balanced (default)</option>
-            <option value="fuzzy">Fuzzy rescue</option>
-          </select>
-          <small>Try fuzzy rescue when the PDF table looks misaligned or cells land in the wrong columns.</small>
-        </label>
-        <div class="pdf-debug" id="pdfDebugPanel" hidden aria-hidden="true">
-          <div class="pdf-debug-meta" id="pdfDebugMeta" hidden></div>
-          <textarea id="pdfDebugOutput" readonly spellcheck="false" aria-label="Extracted PDF preview"></textarea>
-          <div class="pdf-debug-actions">
-            <button class="btn btn-secondary" id="btnExportPdfCsv" type="button">Export interpreted CSV</button>
-            <button class="btn btn-secondary" id="btnCopyPdfDebug" type="button">Copy preview</button>
-          </div>
-        </div>
-        <section class="panel panel-static upload-log-panel" id="uploadLogPanel" aria-live="polite">
-          <h3 class="panel-title">Upload log</h3>
-          <p class="control-hint">Detailed activity never leaves your device—use this log to troubleshoot uploads.</p>
-          <div class="upload-log" id="uploadLog"></div>
-          <div class="upload-log-actions">
-            <button class="btn btn-secondary" id="btnClearLog" type="button">Clear log</button>
-          </div>
-        </section>
-      </div>
-    </details>
   </div>
   <div class="wrap">
     <header class="page-header">
@@ -1551,7 +1517,7 @@
       const dayCount=model.dayHeaders.length;
       const perDay=Array.from({length:dayCount},()=>[]);
       model.rows.forEach(row=>{
-        const highlight=isNathanName(row.rawName||row.name);
+        const highlight=false;
         const daySegments=Array.from({length:dayCount},()=>[]);
         const dayRanges=Array.from({length:dayCount},()=>null);
         for(let dayIdx=0;dayIdx<dayCount;dayIdx++){
@@ -1679,16 +1645,7 @@
       const color=person?getStoredColorForEntry(person):null;
       if(!color) return '';
       const ink=getContrastTextColor(color);
-      const bg=makeRgba(color,.16)||'var(--surface-soft)';
-      const hover=makeRgba(color,.28)||'var(--accent-soft)';
-      const border=makeRgba(color,.42)||color;
       return [
-        `--pill-bg:${bg}`,
-        `--pill-border:${border}`,
-        `--pill-ink:${ink}`,
-        `--pill-hover-bg:${hover}`,
-        `--pill-hover-border:${color}`,
-        `--pill-hover-ink:${ink}`,
         `--pill-active-bg:${color}`,
         `--pill-active-border:${color}`,
         `--pill-active-ink:${ink}`
@@ -1807,7 +1764,6 @@
     }
 
     function getCustomColorForEntry(entry){
-      if(entry && entry.highlight) return null;
       return getStoredColorForEntry(entry);
     }
 
@@ -1859,6 +1815,14 @@
       }else{
         aliasPreferenceMap.delete(key);
       }
+      persistAliasPreferences();
+      refreshReportsForAppearanceChange();
+    }
+
+    function resetAllAppearancePreferences(){
+      colorPreferenceMap.clear();
+      aliasPreferenceMap.clear();
+      persistColorPreferences();
       persistAliasPreferences();
       refreshReportsForAppearanceChange();
     }
@@ -3913,7 +3877,7 @@
         btnClearSelection.disabled=!rows.length || !currentIndividualSelection.length;
       }
       if(btnAllColleagues){
-        btnAllColleagues.disabled=!rows.length || !currentIndividualSelection.length;
+        btnAllColleagues.disabled=!rows.length;
       }
       if(btnManagementShortcut){
         const normalizedTargets=MANAGEMENT_SHORTCUT_NAMES;
@@ -3949,7 +3913,6 @@
           index,
           defaultLabel:(row && (row.name||'').trim()) || cleanColleagueName((row && row.rawName) || '') || `Colleague ${index+1}`,
           label:getRowDisplayName(row,index+1),
-          locked:isNathanName(row.rawName||row.name),
         });
       });
       if(!entries.length){
@@ -3960,8 +3923,19 @@
       entries.sort((a,b)=>a.label.localeCompare(b.label,undefined,{sensitivity:'base'}));
       const hint=document.createElement('p');
       hint.className='control-hint appearance-hint';
-      hint.textContent='Adjust colleague aliases and bar colours across every report. Nathan\'s colour stays locked for quick identification.';
+      hint.textContent='Adjust colleague aliases and bar colours across every report.';
       appearanceControls.appendChild(hint);
+      const resetWrap=document.createElement('div');
+      resetWrap.className='saved-week-actions';
+      const resetBtn=document.createElement('button');
+      resetBtn.type='button';
+      resetBtn.className='btn btn-secondary';
+      resetBtn.textContent='Reset all colleague customisation';
+      resetBtn.addEventListener('click',()=>{
+        resetAllAppearancePreferences();
+      });
+      resetWrap.appendChild(resetBtn);
+      appearanceControls.appendChild(resetWrap);
       const grid=document.createElement('div');
       grid.className='appearance-grid';
       entries.forEach((entry,idx)=>{
@@ -3972,11 +3946,6 @@
         label.className='appearance-label';
         label.setAttribute('for',inputId);
         label.textContent=entry.label;
-        if(entry.locked){
-          const lock=document.createElement('small');
-          lock.textContent='Locked';
-          label.appendChild(lock);
-        }
         const controls=document.createElement('div');
         controls.className='appearance-inputs';
         const aliasInput=document.createElement('input');
@@ -3994,18 +3963,14 @@
         input.id=inputId;
         input.className='appearance-color-input';
         const stored=getColorPreferenceByKey(entry.key);
-        const lockedColor=normalizeColorHex(SPECIAL_NAME_COLOR);
-        const defaultColor=entry.locked?(lockedColor||getDefaultPickerColor()):getDefaultPickerColor();
+        const defaultColor=getDefaultPickerColor();
         input.value=stored||defaultColor||'#4b4b4b';
-        input.disabled=entry.locked;
-        if(!entry.locked){
-          input.addEventListener('input',event=>{
-            handleColorPreferenceChange(entry.key,event.target.value,{includeAppearanceControls:false});
-          });
-          input.addEventListener('change',event=>{
-            handleColorPreferenceChange(entry.key,event.target.value);
-          });
-        }
+        input.addEventListener('input',event=>{
+          handleColorPreferenceChange(entry.key,event.target.value,{includeAppearanceControls:false});
+        });
+        input.addEventListener('change',event=>{
+          handleColorPreferenceChange(entry.key,event.target.value);
+        });
         item.appendChild(label);
         controls.appendChild(aliasInput);
         controls.appendChild(input);
@@ -5201,7 +5166,8 @@
     if(btnAllColleagues){
       btnAllColleagues.addEventListener('click',()=>{
         if(btnAllColleagues.disabled) return;
-        setCurrentIndividualSelection([]);
+        const allIndices=lastIndividuals.map(rec=>rec.index);
+        setCurrentIndividualSelection(allIndices);
         renderViews();
       });
     }

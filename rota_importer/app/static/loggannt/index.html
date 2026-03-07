@@ -134,9 +134,15 @@
     .pdf-toolbar-hint{margin:0;font-size:13px;color:var(--muted);max-width:480px}
     .schedule-view{display:flex;flex-direction:column;gap:24px}
     .line-view{display:flex;flex-direction:column;gap:18px}
-    .line-controls{display:flex;flex-wrap:wrap;gap:14px}
-    .line-controls .ctrl{min-width:180px;flex:1 1 160px}
-    .line-controls .ctrl span{font-weight:600;color:var(--ink)}
+    .line-controls{display:flex;flex-wrap:wrap;gap:14px;align-items:center}
+    .line-day-picker{display:flex;align-items:center;gap:8px;flex-wrap:nowrap;max-width:100%}
+    .line-day-pills{display:flex;align-items:center;gap:6px;flex-wrap:nowrap;overflow-x:auto;padding:2px}
+    .line-day-pill,.line-day-nav{appearance:none;border-radius:999px;border:1px solid var(--border);background:var(--surface-soft);color:var(--muted);font-weight:700;font-size:12px;line-height:1;padding:8px 10px;min-height:32px;cursor:pointer;transition:background .2s ease,color .2s ease,border-color .2s ease,box-shadow .2s ease;flex:0 0 auto}
+    .line-day-nav{font-size:14px;padding:8px;min-width:32px;display:flex;align-items:center;justify-content:center}
+    .line-day-pill:hover,.line-day-nav:hover{background:var(--accent-soft);color:var(--accent)}
+    .line-day-pill:focus-visible,.line-day-nav:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
+    .line-day-pill.active{background:var(--accent);color:#fff;border-color:var(--accent);box-shadow:0 10px 20px rgba(0,123,195,.18)}
+    .line-day-pill[disabled],.line-day-nav[disabled]{opacity:.5;cursor:not-allowed;box-shadow:none}
     .line-window-hint{margin:0;font-size:12px;color:var(--muted);max-width:320px}
     .line-presets{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
     .line-preset-btn{appearance:none;border-radius:999px;border:1px solid var(--border);background:var(--surface-soft);color:var(--muted);font-weight:600;padding:8px 16px;font-size:13px;cursor:pointer;transition:background .2s ease,color .2s ease,border-color .2s ease,box-shadow .2s ease}
@@ -426,10 +432,11 @@
           <section id="viewLine" class="view-panel" role="tabpanel" aria-labelledby="tabLine">
             <div id="lineView" class="line-view">
               <div class="line-controls" id="lineControls" role="region" aria-label="Line view controls" hidden aria-hidden="true">
-                <label class="ctrl" for="lineDaySelect">
-                  <span>Day</span>
-                  <select id="lineDaySelect" disabled></select>
-                </label>
+                <div class="line-day-picker" id="lineDayPicker" role="group" aria-label="Choose day">
+                  <button class="line-day-nav" id="lineDayPrev" type="button" aria-label="Previous day" disabled>←</button>
+                  <div class="line-day-pills" id="lineDayPills" role="group" aria-label="Days of the week"></div>
+                  <button class="line-day-nav" id="lineDayNext" type="button" aria-label="Next day" disabled>→</button>
+                </div>
               <p class="control-hint line-window-hint" id="lineWindowHint">Pinch to zoom the visible hours and drag the timeline to pan.</p>
             </div>
             <div class="line-day-summary" id="lineDaySummary" hidden></div>
@@ -2303,7 +2310,9 @@
 
     const lineViewContainer=document.getElementById('lineView');
     const lineControls=document.getElementById('lineControls');
-    const lineDaySelect=document.getElementById('lineDaySelect');
+    const lineDayPills=document.getElementById('lineDayPills');
+    const lineDayPrev=document.getElementById('lineDayPrev');
+    const lineDayNext=document.getElementById('lineDayNext');
     const lineWindowHint=document.getElementById('lineWindowHint');
     const lineWindowHintDefault=lineWindowHint?lineWindowHint.textContent.trim():'';
     const lineDaySummary=document.getElementById('lineDaySummary');
@@ -2472,6 +2481,34 @@
       if(show){
         updateLinePresetActiveState();
       }
+    }
+
+    function updateLineDayButtonsState(dayCount){
+      const hasDays=Number.isFinite(dayCount) && dayCount>0;
+      if(lineDayPrev){
+        lineDayPrev.disabled=!hasDays || lineViewState.dayIndex<=0;
+      }
+      if(lineDayNext){
+        lineDayNext.disabled=!hasDays || lineViewState.dayIndex>=dayCount-1;
+      }
+    }
+
+    function renderLineDayButtons(dayLabels){
+      if(!lineDayPills) return;
+      const hasData=Array.isArray(dayLabels) && dayLabels.length>0;
+      if(!hasData){
+        lineDayPills.innerHTML='';
+        updateLineDayButtonsState(0);
+        return;
+      }
+      const currentIndex=Math.min(Math.max(lineViewState.dayIndex||0,0),dayLabels.length-1);
+      lineViewState.dayIndex=currentIndex;
+      lineDayPills.innerHTML=dayLabels.map((label,idx)=>{
+        const shortLabel=formatShortDayLabel(label,lineViewDateOrder)||`Day ${idx+1}`;
+        const isActive=idx===currentIndex;
+        return `<button class="line-day-pill${isActive?' active':''}" type="button" data-day-index="${idx}" aria-pressed="${isActive?'true':'false'}">${shortLabel}</button>`;
+      }).join('');
+      updateLineDayButtonsState(dayLabels.length);
     }
 
     function normalizeEntrySegment(segment){
@@ -2740,14 +2777,7 @@
         }
         return;
       }
-      if(lineDaySelect){
-        const options=dayLabels.map((label,idx)=>`<option value="${idx}">${formatShortDayLabel(label,lineViewDateOrder)||`Day ${idx+1}`}</option>`);
-        lineDaySelect.innerHTML=options.join('');
-        lineDaySelect.disabled=dayLabels.length<=1;
-        const desired=Math.min(Math.max(lineViewState.dayIndex||0,0),dayLabels.length-1);
-        lineViewState.dayIndex=desired;
-        lineDaySelect.value=String(desired);
-      }
+      renderLineDayButtons(dayLabels);
       if(lineDaySummary){
         const label=dayLabels[lineViewState.dayIndex]||`Day ${lineViewState.dayIndex+1}`;
         lineDaySummary.textContent=formatFullDayLabel(label,lineViewDateOrder)||label;
@@ -5059,15 +5089,34 @@
       switchView(activeView);
     }
 
-    if(lineDaySelect){
-      lineDaySelect.addEventListener('change',()=>{
-        const value=parseInt(lineDaySelect.value,10);
+    function setLineDayIndex(dayIndex){
+      if(!Number.isFinite(dayIndex) || dayIndex<0) return;
+      lineViewUserSelectedDay=true;
+      lineViewState.dayIndex=dayIndex;
+      lineViewStateInitialized=false;
+      renderLineView(getActiveWeekData());
+    }
+
+    if(lineDayPills){
+      lineDayPills.addEventListener('click',event=>{
+        const button=event.target instanceof Element?event.target.closest('button[data-day-index]'):null;
+        if(!button) return;
+        const value=parseInt(button.getAttribute('data-day-index')||'',10);
         if(!Number.isNaN(value)){
-          lineViewUserSelectedDay=true;
-          lineViewState.dayIndex=value;
-          lineViewStateInitialized=false;
-          renderLineView(getActiveWeekData());
+          setLineDayIndex(value);
         }
+      });
+    }
+
+    if(lineDayPrev){
+      lineDayPrev.addEventListener('click',()=>{
+        setLineDayIndex(Math.max(0,(lineViewState.dayIndex||0)-1));
+      });
+    }
+
+    if(lineDayNext){
+      lineDayNext.addEventListener('click',()=>{
+        setLineDayIndex((lineViewState.dayIndex||0)+1);
       });
     }
 

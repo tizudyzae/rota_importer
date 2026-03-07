@@ -532,6 +532,62 @@
       return resolveEntryDisplayName(entry,lookup) || '';
     }
 
+    function buildEntryShiftSignature(entry){
+      if(!entry) return '';
+      const segments=[];
+      if(Array.isArray(entry.segments) && entry.segments.length){
+        entry.segments.forEach(seg=>{
+          if(!seg) return;
+          const segStart=Number.isFinite(seg.start)?Math.max(0,Math.min(1440,seg.start)):null;
+          const segEnd=Number.isFinite(seg.end)?Math.max(0,Math.min(1440,seg.end)):null;
+          if(segStart===null || segEnd===null || segEnd<=segStart) return;
+          segments.push(`${segStart}-${segEnd}`);
+        });
+      }else if(entry.range && Number.isFinite(entry.range.start) && Number.isFinite(entry.range.end) && entry.range.end>entry.range.start){
+        const rangeStart=Math.max(0,Math.min(1440,entry.range.start));
+        const rangeEnd=Math.max(0,Math.min(1440,entry.range.end));
+        segments.push(`${rangeStart}-${rangeEnd}`);
+      }
+      return segments.join('|');
+    }
+
+    function buildEntryShiftSortMeta(entry){
+      const signature=buildEntryShiftSignature(entry);
+      if(!signature){
+        return {
+          hasShift:false,
+          start:Number.POSITIVE_INFINITY,
+          end:Number.POSITIVE_INFINITY,
+          signature:'',
+        };
+      }
+      const parts=signature.split('|').map(part=>part.split('-').map(value=>parseInt(value,10))).filter(pair=>pair.length===2 && Number.isFinite(pair[0]) && Number.isFinite(pair[1]));
+      const starts=parts.map(pair=>pair[0]);
+      const ends=parts.map(pair=>pair[1]);
+      return {
+        hasShift:true,
+        start:starts.length?Math.min(...starts):Number.POSITIVE_INFINITY,
+        end:ends.length?Math.max(...ends):Number.POSITIVE_INFINITY,
+        signature,
+      };
+    }
+
+    function compareEntriesByShiftThenDisplayName(a,b,lookup){
+      const aMeta=buildEntryShiftSortMeta(a);
+      const bMeta=buildEntryShiftSortMeta(b);
+      if(aMeta.hasShift!==bMeta.hasShift) return aMeta.hasShift?-1:1;
+      if(aMeta.start!==bMeta.start) return aMeta.start-bMeta.start;
+      if(aMeta.end!==bMeta.end) return aMeta.end-bMeta.end;
+      const signatureDiff=compareDisplayNames(aMeta.signature,bMeta.signature);
+      if(signatureDiff!==0) return signatureDiff;
+      const nameDiff=compareDisplayNames(resolveEntrySortName(a,lookup),resolveEntrySortName(b,lookup));
+      if(nameDiff!==0) return nameDiff;
+      const aStart=buildRowSortKey(a);
+      const bStart=buildRowSortKey(b);
+      if(aStart!==bStart) return aStart-bStart;
+      return 0;
+    }
+
     function sortEntriesByDisplayName(entries,lookup){
       const list=Array.isArray(entries)?entries.filter(Boolean):[];
       return list.slice().sort((a,b)=>{
@@ -2694,7 +2750,7 @@
         lineChartRows.appendChild(empty);
         return;
       }
-      const sortedEntries=sortEntriesByDisplayName(entries,lineViewCurrentLookup);
+      const sortedEntries=(Array.isArray(entries)?entries.filter(Boolean):[]).slice().sort((a,b)=>compareEntriesByShiftThenDisplayName(a,b,lineViewCurrentLookup));
       const filteredEntries=[];
       let hiddenCount=0;
       let totalRenderable=0;
@@ -3506,7 +3562,7 @@
         return;
       }
       dayHeaders.forEach((label,idx)=>{
-        const rows=sortEntriesByDisplayName(perDayForPreview[idx]||[],lookup);
+        const rows=(Array.isArray(perDayForPreview[idx])?perDayForPreview[idx].filter(Boolean):[]).slice().sort((a,b)=>compareEntriesByShiftThenDisplayName(a,b,lookup));
         drawDayCard(sheets,label,rows,{
           dateRangeLabel,
           pageNumber:idx+1,
@@ -3773,7 +3829,7 @@
         const formattedDates=dayHeaders.map(label=>formatFullDayLabel(label,dateOrder));
         const dateRangeLabel=resolveDateRangeLabelForWeek(model,week.metadata,layout);
         dayHeaders.forEach((label,idx)=>{
-          const rows=sortEntriesByDisplayName(filteredPerDay[idx]||[],lookup);
+          const rows=(Array.isArray(filteredPerDay[idx])?filteredPerDay[idx].filter(Boolean):[]).slice().sort((a,b)=>compareEntriesByShiftThenDisplayName(a,b,lookup));
           const footerText=formatFooterText(layout.footerTemplate,{
             pageNumber,
             totalPages,

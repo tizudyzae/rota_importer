@@ -65,7 +65,7 @@
     .settings-toggle:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
     .settings-toggle[disabled]{opacity:.5;cursor:not-allowed;transform:none;box-shadow:none}
     .panel-title{margin:0;font-size:18px;font-weight:700;color:var(--ink)}
-    .settings-panel{position:fixed;top:84px;left:20px;width:320px;max-width:calc(100% - 40px);z-index:1990;max-height:calc(100vh - 104px);overflow-y:auto;overscroll-behavior:contain}
+    .settings-panel{position:fixed;top:84px;left:20px;width:420px;max-width:calc(100% - 40px);z-index:1990;max-height:calc(100vh - 104px);overflow-y:auto;overscroll-behavior:contain}
     .settings-panel .panel-title{margin-bottom:4px}
     .settings-panel .control-hint{background:transparent;padding:0;margin-bottom:8px}
     .saved-week-select{display:flex;flex-direction:column;gap:6px}
@@ -387,8 +387,8 @@
       <aside class="side-panel">
         <div class="controls">
           <label class="saved-week-select" for="savedWeekSelect">
-            <span>Viewing week (set in settings)</span>
-            <select id="savedWeekSelect" disabled></select>
+            <span>Viewing week(s)</span>
+            <select id="savedWeekSelect" multiple disabled></select>
           </label>
           <p class="saved-week-meta" id="savedWeekMeta" hidden></p>
           <label class="ctrl" for="selIndividual" id="reportScopeControl" hidden aria-hidden="true">
@@ -796,6 +796,7 @@
 
     const STORAGE_KEY='loggannt.rotas.v1';
     const STORAGE_SELECTION_KEY='loggannt.rotas.selection';
+    const STORAGE_VIEWER_SELECTION_KEY='loggannt.rotas.viewerSelection';
     const STORAGE_COLOR_KEY='loggannt.rotas.colors';
     const STORAGE_ALIAS_KEY='loggannt.rotas.aliases';
     const STORAGE_HOME_TIP_KEY='loggannt.rotas.homeTipDismissed';
@@ -1906,7 +1907,21 @@
         if(!Array.isArray(parsed)) return [];
         return parsed.filter(id=>typeof id==='string');
       }catch(err){
-        console.warn('Failed to read week selection:',err);
+        console.warn('Failed to read settings week selection:',err);
+        return [];
+      }
+    }
+
+    function loadSavedViewerSelection(){
+      if(!storageSupported) return [];
+      try{
+        const raw=window.localStorage.getItem(STORAGE_VIEWER_SELECTION_KEY);
+        if(!raw) return [];
+        const parsed=JSON.parse(raw);
+        if(!Array.isArray(parsed)) return [];
+        return parsed.filter(id=>typeof id==='string');
+      }catch(err){
+        console.warn('Failed to read viewer week selection:',err);
         return [];
       }
     }
@@ -1916,7 +1931,16 @@
       try{
         window.localStorage.setItem(STORAGE_SELECTION_KEY,JSON.stringify(ids));
       }catch(err){
-        console.warn('Failed to store selection:',err);
+        console.warn('Failed to store settings selection:',err);
+      }
+    }
+
+    function persistViewerSelection(ids){
+      if(!storageSupported) return;
+      try{
+        window.localStorage.setItem(STORAGE_VIEWER_SELECTION_KEY,JSON.stringify(ids));
+      }catch(err){
+        console.warn('Failed to store viewer selection:',err);
       }
     }
 
@@ -1942,6 +1966,7 @@
     let savedWeekRecords=trimWeekRecords(loadSavedWeekRecords());
     const cachedWeeks=new Map();
     let activeWeekIds=loadSavedSelection();
+    let viewerWeekIds=loadSavedViewerSelection();
     let settingsDrawerOpen=false;
 
     function hydrateWeekRecord(record){
@@ -1977,7 +2002,7 @@
     }
 
     function getActiveWeekData(){
-      return activeWeekIds.slice(0,1).map(id=>cachedWeeks.get(id)).filter(Boolean);
+      return viewerWeekIds.map(id=>cachedWeeks.get(id)).filter(Boolean);
     }
 
     function setActiveWeeks(ids,{persist=true}={}){
@@ -1987,11 +2012,22 @@
         if(!cachedWeeks.has(id)) return;
         if(!unique.includes(id)) unique.push(id);
       });
-      if(unique.length>1){
-        unique.splice(1);
-      }
       activeWeekIds=unique;
       if(persist) persistActiveSelection(activeWeekIds);
+      constrainViewerWeeks({persist});
+    }
+
+    function setViewerWeeks(ids,{persist=true}={}){
+      const allowed=new Set(activeWeekIds);
+      const unique=[];
+      ids.forEach(id=>{
+        if(typeof id!=='string') return;
+        if(!cachedWeeks.has(id)) return;
+        if(activeWeekIds.length && !allowed.has(id)) return;
+        if(!unique.includes(id)) unique.push(id);
+      });
+      viewerWeekIds=unique;
+      if(persist) persistViewerSelection(viewerWeekIds);
     }
 
     function recordCoversIsoDate(record,iso){
@@ -2012,24 +2048,43 @@
       return false;
     }
 
+    function constrainViewerWeeks({persist=true}={}){
+      if(!activeWeekIds.length){
+        viewerWeekIds=[];
+        if(persist) persistViewerSelection(viewerWeekIds);
+        return;
+      }
+      const allowed=new Set(activeWeekIds);
+      const valid=viewerWeekIds.filter(id=>cachedWeeks.has(id) && allowed.has(id));
+      if(valid.length){
+        viewerWeekIds=valid;
+        if(persist) persistViewerSelection(viewerWeekIds);
+        return;
+      }
+      viewerWeekIds=[activeWeekIds[0]];
+      if(persist) persistViewerSelection(viewerWeekIds);
+    }
+
     function ensureActiveWeeks(){
       const available=getSortedWeekRecords();
       if(!available.length){
         activeWeekIds=[];
+        viewerWeekIds=[];
         persistActiveSelection(activeWeekIds);
+        persistViewerSelection(viewerWeekIds);
         return;
       }
       const valid=activeWeekIds.filter(id=>cachedWeeks.has(id));
       if(valid.length){
-        activeWeekIds=valid.slice(0,1);
-        persistActiveSelection(activeWeekIds);
-        return;
+        activeWeekIds=valid;
+      }else{
+        const todayIso=formatIsoLocalDate(new Date());
+        const preferred=available.find(record=>recordCoversIsoDate(record,todayIso));
+        const target=preferred||available[0]||null;
+        activeWeekIds=target?[target.id]:[];
       }
-      const todayIso=formatIsoLocalDate(new Date());
-      const preferred=available.find(record=>recordCoversIsoDate(record,todayIso));
-      const target=preferred||available[0]||null;
-      activeWeekIds=target?[target.id]:[];
       persistActiveSelection(activeWeekIds);
+      constrainViewerWeeks({persist:true});
     }
 
     ensureActiveWeeks();
@@ -2075,35 +2130,35 @@
       const settingsWeekList=document.getElementById('settingsWeekList');
       const records=getSortedWeekRecords();
       const hasRecords=records.length>0;
-      let activeId=activeWeekIds[0]||'';
-      if(hasRecords && !records.some(record=>record.id===activeId)){
-        activeId=records[0].id;
-        setActiveWeeks([activeId],{persist:true});
+      const activeSet=new Set(activeWeekIds);
+      if(hasRecords && !activeWeekIds.length){
+        setActiveWeeks([records[0].id],{persist:true});
       }
       if(select){
         select.innerHTML='';
-        if(hasRecords){
-          records.forEach(record=>{
+        const availableForViewer=records.filter(record=>activeSet.has(record.id));
+        if(availableForViewer.length){
+          availableForViewer.forEach(record=>{
             const option=document.createElement('option');
             option.value=record.id;
             option.textContent=record.metadata && record.metadata.label?record.metadata.label:'Saved rota';
+            option.selected=viewerWeekIds.includes(record.id);
             select.appendChild(option);
           });
-          select.disabled=true;
-          select.value=activeId || records[0].id;
+          select.disabled=false;
         }else{
           select.disabled=true;
           select.value='';
         }
       }
-      const activeRecord=records.find(item=>item.id===activeId);
-      const metaText=activeRecord?formatWeekMeta(activeRecord):'';
+      const metaRecords=records.filter(item=>viewerWeekIds.includes(item.id));
+      const metaText=metaRecords.map(item=>formatWeekMeta(item)).filter(Boolean).join(' · ');
       if(meta){
         meta.textContent=metaText;
         meta.hidden=!metaText;
       }
       if(settingsMeta){
-        settingsMeta.textContent=metaText?`Viewing ${metaText}`:'';
+        settingsMeta.textContent=metaText?`Selected for viewer: ${metaText}`:'';
         settingsMeta.hidden=!metaText;
       }
       if(settingsWeekList){
@@ -2123,12 +2178,19 @@
             main.className='settings-week-item-main';
 
             const radio=document.createElement('input');
-            radio.type='radio';
-            radio.name='settingsActiveWeek';
+            radio.type='checkbox';
+            radio.name='settingsAllowedWeek';
             radio.value=record.id;
-            radio.checked=record.id===activeId;
+            radio.checked=activeSet.has(record.id);
             radio.addEventListener('change',()=>{
-              setActiveWeeks([record.id],{persist:true});
+              const next=activeWeekIds.slice();
+              if(radio.checked){
+                if(!next.includes(record.id)) next.push(record.id);
+              }else{
+                const idx=next.indexOf(record.id);
+                if(idx>=0) next.splice(idx,1);
+              }
+              setActiveWeeks(next,{persist:true});
               updateWeekSelectionUI();
               renderViews();
             });
@@ -2171,7 +2233,9 @@
       savedWeekRecords.splice(index,1);
       rebuildWeekCache();
       const remaining=activeWeekIds.filter(item=>item!==id);
+      const remainingViewer=viewerWeekIds.filter(item=>item!==id);
       setActiveWeeks(remaining,{persist:true});
+      setViewerWeeks(remainingViewer,{persist:true});
       ensureActiveWeeks();
       updateWeekSelectionUI();
       renderViews();
@@ -3723,11 +3787,12 @@
         container.appendChild(placeholder);
         return;
       }
-      const week=weeks[0];
-      const section=document.createElement('section');
-      section.className='schedule-week';
-      renderWeekSchedule(section,week,{allowIndividual:true,showHeading:true});
-      container.appendChild(section);
+      weeks.forEach(week=>{
+        const section=document.createElement('section');
+        section.className='schedule-week';
+        renderWeekSchedule(section,week,{allowIndividual:true,showHeading:true});
+        container.appendChild(section);
+      });
     }
 
     function renderWeekPdfPreview(sheets,week,{allowIndividual,showHeading}){
@@ -3810,8 +3875,9 @@
         sheets.appendChild(placeholder);
         return;
       }
-      const week=weeks[0];
-      renderWeekPdfPreview(sheets,week,{allowIndividual:true,showHeading:false});
+      weeks.forEach((week,idx)=>{
+        renderWeekPdfPreview(sheets,week,{allowIndividual:true,showHeading:weeks.length>1||idx>0});
+      });
     }
 
 
@@ -3915,7 +3981,7 @@
       });
       btn.disabled=!rows.length;
       let btnLabel='Export weekly PDF';
-      if(currentIndividualSelection.length===1){
+      if(currentIndividualSelection.length===1 && getActiveWeekData().length===1){
         btnLabel='Export colleague PDF';
       }else if(currentIndividualSelection.length>1){
         btnLabel='Export filtered PDF';
@@ -4061,7 +4127,10 @@
         savedWeekRecords.push(record);
       }
       rebuildWeekCache();
-      setActiveWeeks([record.id],{persist:true});
+      const nextAllowed=activeWeekIds.slice();
+      if(!nextAllowed.includes(record.id)) nextAllowed.push(record.id);
+      setActiveWeeks(nextAllowed,{persist:true});
+      setViewerWeeks([record.id],{persist:true});
       ensureActiveWeeks();
       updateWeekSelectionUI();
       renderViews();
@@ -4095,8 +4164,8 @@
         alert('No stored rotas to export.');
         return;
       }
-      const week=weeks[0];
-      if(!week || !week.model){
+      const validWeeks=weeks.filter(week=>week && week.model);
+      if(!validWeeks.length){
         alert('The selected week is unavailable.');
         return;
       }
@@ -4112,43 +4181,57 @@
         const fontRegular=await pdfDoc.embedFont(StandardFonts.Helvetica);
         const fontBold=await pdfDoc.embedFont(StandardFonts.HelveticaBold);
         const pageSize=[842,595];
-        const model=week.model;
-        const perDay=Array.isArray(week.perDay)?week.perDay:[];
-        const dayHeaders=Array.isArray(model.dayHeaders)?model.dayHeaders:[];
-        const lookup=buildDisplayNameLookup(model);
-        const selectionRecords=getSelectionRecords(model);
-        const selectedRows=selectionRecords.map(item=>item.row);
-        const filteredPerDay=selectedRows.length?filterPerDayEntries(perDay,selectedRows):perDay;
-        const totalPages=Math.max(dayHeaders.length,1);
-        let pageNumber=1;
-        const dateOrder=(week.metadata && week.metadata.dateOrder)||inferDateOrder(dayHeaders,model);
-        const formattedDates=dayHeaders.map(label=>formatFullDayLabel(label,dateOrder));
-        const dateRangeLabel=resolveDateRangeLabelForWeek(model,week.metadata,layout);
-        dayHeaders.forEach((label,idx)=>{
-          const rows=(Array.isArray(filteredPerDay[idx])?filteredPerDay[idx].filter(Boolean):[]).slice().sort((a,b)=>compareEntriesByShiftThenDisplayName(a,b,lookup));
-          const footerText=formatFooterText(layout.footerTemplate,{
-            pageNumber,
-            totalPages,
-            formattedDate:formattedDates[idx] || label || `Day ${idx+1}`,
-            label:label,
-          });
-          const plan=buildPdfSheetPlan(rows,layout,{
-            title:layout.title||DEFAULT_LAYOUT.title,
-            rangeLabel:dateRangeLabel,
-            code:(layout.staticCode||STATIC_CODE||'').trim(),
-            date:formattedDates[idx] || label || `Day ${idx+1}`,
-            footerText,
-            footerNote:(layout.footerNote||'').trim(),
-          },palette,{});
-          const page=pdfDoc.addPage(pageSize);
-          const pageBg=parseCssColor(layout.pageBackground);
-          if(pageBg){
-            page.drawRectangle({x:0,y:0,width:page.getWidth(),height:page.getHeight(),color:rgb(pageBg.r,pageBg.g,pageBg.b)});
-          }
-          drawPdfSheet(page,plan,{fonts:{regular:fontRegular,bold:fontBold},palette,rgb,margin:24});
-          pageNumber+=1;
+        let totalPages=0;
+        validWeeks.forEach(week=>{
+          const model=week.model;
+          const dayHeaders=Array.isArray(model.dayHeaders)?model.dayHeaders:[];
+          totalPages+=Math.max(dayHeaders.length,1);
         });
-        const baseName=week.metadata && week.metadata.label?week.metadata.label:'rota';
+        let pageNumber=1;
+        validWeeks.forEach(week=>{
+          const model=week.model;
+          const perDay=Array.isArray(week.perDay)?week.perDay:[];
+          const dayHeaders=Array.isArray(model.dayHeaders)?model.dayHeaders:[];
+          const lookup=buildDisplayNameLookup(model);
+          const selectionRecords=getSelectionRecords(model);
+          const selectedRows=selectionRecords.map(item=>item.row);
+          const filteredPerDay=selectedRows.length?filterPerDayEntries(perDay,selectedRows):perDay;
+          const dateOrder=(week.metadata && week.metadata.dateOrder)||inferDateOrder(dayHeaders,model);
+          const formattedDates=dayHeaders.map(label=>formatFullDayLabel(label,dateOrder));
+          const dateRangeLabel=resolveDateRangeLabelForWeek(model,week.metadata,layout);
+          const renderDaySheet=(rows,label,formattedDate)=>{
+            const footerText=formatFooterText(layout.footerTemplate,{
+              pageNumber,
+              totalPages,
+              formattedDate:formattedDate || label,
+              label:label,
+            });
+            const plan=buildPdfSheetPlan(rows,layout,{
+              title:layout.title||DEFAULT_LAYOUT.title,
+              rangeLabel:dateRangeLabel,
+              code:(layout.staticCode||STATIC_CODE||'').trim(),
+              date:formattedDate || label,
+              footerText,
+              footerNote:(layout.footerNote||'').trim(),
+            },palette,{});
+            const page=pdfDoc.addPage(pageSize);
+            const pageBg=parseCssColor(layout.pageBackground);
+            if(pageBg){
+              page.drawRectangle({x:0,y:0,width:page.getWidth(),height:page.getHeight(),color:rgb(pageBg.r,pageBg.g,pageBg.b)});
+            }
+            drawPdfSheet(page,plan,{fonts:{regular:fontRegular,bold:fontBold},palette,rgb,margin:24});
+            pageNumber+=1;
+          };
+          if(!dayHeaders.length){
+            renderDaySheet([],week.metadata && week.metadata.label ? week.metadata.label : 'Saved rota',week.metadata && week.metadata.label ? week.metadata.label : 'Saved rota');
+            return;
+          }
+          dayHeaders.forEach((label,idx)=>{
+            const rows=(Array.isArray(filteredPerDay[idx])?filteredPerDay[idx].filter(Boolean):[]).slice().sort((a,b)=>compareEntriesByShiftThenDisplayName(a,b,lookup));
+            renderDaySheet(rows,label,formattedDates[idx] || label || `Day ${idx+1}`);
+          });
+        });
+        const baseName=validWeeks.length===1 && validWeeks[0].metadata && validWeeks[0].metadata.label?validWeeks[0].metadata.label:'rota';
         const exportLabel=sanitizeFileName(baseName);
         const pdfBytes=await pdfDoc.save();
         const blob=new Blob([pdfBytes],{type:'application/pdf'});
@@ -4192,6 +4275,9 @@
       const dayHeaders=Array.isArray(model.dayHeaders)?model.dayHeaders:[];
       const dateOrder=(week.metadata && week.metadata.dateOrder)||inferDateOrder(dayHeaders,model);
       const dayRows=[];
+      if(!dayHeaders.length){
+        dayRows.push({name:'No day data',rawName:person.rawName || '',range:null,segments:[],highlight:false});
+      }
       dayHeaders.forEach((label,dayIdx)=>{
         const parsed=parseDayHeader(label,dateOrder);
         const dayName=(parsed && parsed.dayName)||formatShortDayLabel(label,dateOrder)||label;
@@ -4252,7 +4338,7 @@
     async function exportSelectedPDF(){
       const btn=document.getElementById('btnExport');
       if(!btn || btn.disabled) return;
-      if(currentIndividualSelection.length===1){
+      if(currentIndividualSelection.length===1 && getActiveWeekData().length===1){
         await exportIndividualPDF(currentIndividualSelection[0],btn);
         return;
       }
@@ -5125,6 +5211,16 @@
       });
     }
 
+    const savedWeekSelect=document.getElementById('savedWeekSelect');
+    if(savedWeekSelect){
+      savedWeekSelect.addEventListener('change',()=>{
+        const selectedIds=Array.from(savedWeekSelect.selectedOptions||[]).map(option=>option.value).filter(Boolean);
+        setViewerWeeks(selectedIds,{persist:true});
+        updateWeekSelectionUI();
+        renderViews();
+      });
+    }
+
     const exportButton=document.getElementById('btnExport');
     if(exportButton){
       exportButton.addEventListener('click',()=>{ exportSelectedPDF(); });
@@ -5391,7 +5487,7 @@
       if(weekChanged){
         lineViewCarryAcrossWeekChange=true;
         lineViewCarryAcrossDayChange=true;
-        setActiveWeeks([targetWeekId],{persist:true});
+        setViewerWeeks([targetWeekId],{persist:true});
         updateWeekSelectionUI();
       }else{
         lineViewCarryAcrossDayChange=true;

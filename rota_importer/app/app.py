@@ -101,11 +101,13 @@ def parse_headers(header_row: List[str]) -> dict:
         cell = clean_cell(cell)
         match = DATE_HEADER_RE.match(cell)
         if match:
+            month = match.group(2)
+            day = match.group(3)
             headers[idx] = {
             "day_key": match.group(1).lower(),
             "full_header": cell,
-            "day": match.group(2),
-            "month": match.group(3),
+            "day": day,
+            "month": month,
             }
         else:
             headers[idx] = {

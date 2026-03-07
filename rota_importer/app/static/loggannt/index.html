@@ -74,6 +74,16 @@
     .saved-week-meta{font-size:12px;color:var(--muted);margin:0}
     .saved-week-actions{display:flex;flex-wrap:wrap;gap:8px}
     .saved-week-actions .btn{flex:1 1 auto}
+
+    .settings-week-list{display:flex;flex-direction:column;gap:8px}
+    .settings-week-empty{margin:0;font-size:13px;color:var(--muted);padding:10px 0}
+    .settings-week-item{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;border:1px solid var(--border);border-radius:14px;padding:10px 12px;background:var(--surface-soft)}
+    .settings-week-item-main{display:flex;align-items:flex-start;gap:10px;min-width:0;text-align:left}
+    .settings-week-item-main input{margin-top:2px}
+    .settings-week-item-info{display:flex;flex-direction:column;gap:2px;min-width:0}
+    .settings-week-item-label{font-weight:700;color:var(--ink);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .settings-week-item-range{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .settings-week-delete{padding:7px 12px;font-size:12px;line-height:1.1}
     .btn{appearance:none;border-radius:999px;padding:11px 18px;background:var(--accent);color:#fff;font-weight:700;cursor:pointer;letter-spacing:.15px;border:1px solid var(--accent);box-shadow:0 10px 20px rgba(0,123,195,.18);transition:background .2s ease,border-color .2s ease,box-shadow .2s ease,transform .1s ease}
     .btn:hover{background:var(--accent-strong);border-color:var(--accent-strong);box-shadow:0 12px 24px rgba(0,92,145,.22)}
     .btn:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
@@ -123,7 +133,7 @@
     .selection-actions{display:flex;flex-wrap:wrap;gap:10px}
     .selection-actions .btn{width:100%}
     .selection-actions .btn{flex:1 1 120px}
-    .report-scope-pills{display:flex;flex-wrap:wrap;gap:8px;max-height:220px;overflow:auto;padding:2px}
+    .report-scope-pills{display:flex;flex-wrap:wrap;gap:8px;max-height:220px;overflow:auto;padding:2px;justify-content:center}
     .report-scope-pill{appearance:none;border:1px solid var(--pill-border,var(--border));background:var(--pill-bg,var(--surface-soft));color:var(--pill-ink,var(--muted));border-radius:999px;padding:8px 12px;font-size:13px;font-weight:700;cursor:pointer;transition:all .2s ease}
     .report-scope-pill:hover{background:var(--pill-hover-bg,var(--accent-soft));color:var(--pill-hover-ink,var(--accent));border-color:var(--pill-hover-border,var(--accent))}
     .report-scope-pill.active{background:var(--pill-active-bg,var(--accent));border-color:var(--pill-active-border,var(--accent));color:var(--pill-active-ink,#fff);box-shadow:0 10px 20px rgba(0,123,195,.18)}
@@ -150,7 +160,7 @@
     .line-day-pill.active{background:var(--accent);color:#fff;border-color:var(--accent);box-shadow:0 10px 20px rgba(0,123,195,.18)}
     .line-day-pill[disabled],.line-day-nav[disabled]{opacity:.5;cursor:not-allowed;box-shadow:none}
     .line-window-hint{margin:0;font-size:12px;color:var(--muted);max-width:320px}
-    .line-presets{display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+    .line-presets{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:center}
     .line-preset-btn{appearance:none;border-radius:999px;border:1px solid var(--border);background:var(--surface-soft);color:var(--muted);font-weight:600;padding:8px 16px;font-size:13px;cursor:pointer;transition:background .2s ease,color .2s ease,border-color .2s ease,box-shadow .2s ease}
     .line-preset-btn:hover{background:var(--accent-soft);color:var(--accent)}
     .line-preset-btn:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
@@ -338,6 +348,9 @@
       .shift-card .shift-time{text-align:left;align-items:flex-start}
       .individual-item{flex-direction:column;align-items:flex-start}
       .individual-item-time{text-align:left;align-items:flex-start}
+      .selection-actions{justify-content:center}
+      .report-scope-pills{justify-content:center}
+      .line-presets{justify-content:center}
     }
   </style>
 </head>
@@ -350,10 +363,8 @@
     <div class="saved-week-actions">
       <button class="btn btn-secondary" id="btnUpload" type="button">Upload CSV</button>
     </div>
-    <div class="saved-week-actions">
-      <button class="btn btn-secondary" id="btnForgetWeek" type="button">Forget selected week</button>
-      <button class="btn btn-secondary" id="btnClearWeeks" type="button">Clear saved weeks</button>
-    </div>
+    <div id="settingsWeekList" class="settings-week-list" role="list" aria-label="Saved weeks"></div>
+    <p class="saved-week-meta" id="settingsWeekMeta" hidden></p>
     <div id="appearanceControls" class="appearance-controls" hidden aria-hidden="true" role="group"></div>
   </div>
   <div class="wrap">
@@ -376,7 +387,7 @@
       <aside class="side-panel">
         <div class="controls">
           <label class="saved-week-select" for="savedWeekSelect">
-            <span>Saved week</span>
+            <span>Viewing week (set in settings)</span>
             <select id="savedWeekSelect" disabled></select>
           </label>
           <p class="saved-week-meta" id="savedWeekMeta" hidden></p>
@@ -2060,15 +2071,14 @@
     function updateWeekSelectionUI(){
       const select=document.getElementById('savedWeekSelect');
       const meta=document.getElementById('savedWeekMeta');
-      const clearBtn=document.getElementById('btnClearWeeks');
-      const forgetBtn=document.getElementById('btnForgetWeek');
+      const settingsMeta=document.getElementById('settingsWeekMeta');
+      const settingsWeekList=document.getElementById('settingsWeekList');
       const records=getSortedWeekRecords();
       const hasRecords=records.length>0;
-      if(clearBtn){
-        clearBtn.disabled=!hasRecords;
-      }
-      if(forgetBtn){
-        forgetBtn.disabled=!hasRecords;
+      let activeId=activeWeekIds[0]||'';
+      if(hasRecords && !records.some(record=>record.id===activeId)){
+        activeId=records[0].id;
+        setActiveWeeks([activeId],{persist:true});
       }
       if(select){
         select.innerHTML='';
@@ -2079,25 +2089,78 @@
             option.textContent=record.metadata && record.metadata.label?record.metadata.label:'Saved rota';
             select.appendChild(option);
           });
-          let activeId=activeWeekIds[0];
-          if(!activeId || !records.some(record=>record.id===activeId)){
-            activeId=records[0].id;
-            setActiveWeeks([activeId],{persist:true});
-          }
-          select.disabled=false;
-          select.value=activeId;
+          select.disabled=true;
+          select.value=activeId || records[0].id;
         }else{
           select.disabled=true;
           select.value='';
-          setActiveWeeks([],{persist:true});
         }
       }
+      const activeRecord=records.find(item=>item.id===activeId);
+      const metaText=activeRecord?formatWeekMeta(activeRecord):'';
       if(meta){
-        const activeId=activeWeekIds[0];
-        const record=records.find(item=>item.id===activeId);
-        const text=record?formatWeekMeta(record):'';
-        meta.textContent=text;
-        meta.hidden=!text;
+        meta.textContent=metaText;
+        meta.hidden=!metaText;
+      }
+      if(settingsMeta){
+        settingsMeta.textContent=metaText?`Viewing ${metaText}`:'';
+        settingsMeta.hidden=!metaText;
+      }
+      if(settingsWeekList){
+        settingsWeekList.innerHTML='';
+        if(!hasRecords){
+          const empty=document.createElement('p');
+          empty.className='settings-week-empty';
+          empty.textContent='No saved weeks yet. Upload a CSV to get started.';
+          settingsWeekList.appendChild(empty);
+        }else{
+          records.forEach(record=>{
+            const item=document.createElement('div');
+            item.className='settings-week-item';
+            item.setAttribute('role','listitem');
+
+            const main=document.createElement('label');
+            main.className='settings-week-item-main';
+
+            const radio=document.createElement('input');
+            radio.type='radio';
+            radio.name='settingsActiveWeek';
+            radio.value=record.id;
+            radio.checked=record.id===activeId;
+            radio.addEventListener('change',()=>{
+              setActiveWeeks([record.id],{persist:true});
+              updateWeekSelectionUI();
+              renderViews();
+            });
+
+            const info=document.createElement('span');
+            info.className='settings-week-item-info';
+
+            const label=document.createElement('span');
+            label.className='settings-week-item-label';
+            label.textContent=record.metadata && record.metadata.label?record.metadata.label:'Saved rota';
+
+            const range=document.createElement('span');
+            range.className='settings-week-item-range';
+            range.textContent=formatWeekMeta(record)||'Saved week';
+
+            info.appendChild(label);
+            info.appendChild(range);
+            main.appendChild(radio);
+            main.appendChild(info);
+
+            const del=document.createElement('button');
+            del.type='button';
+            del.className='btn btn-secondary settings-week-delete';
+            del.textContent='Delete';
+            del.setAttribute('aria-label',`Delete ${label.textContent}`);
+            del.addEventListener('click',()=>{ removeWeekRecord(record.id); });
+
+            item.appendChild(main);
+            item.appendChild(del);
+            settingsWeekList.appendChild(item);
+          });
+        }
       }
       syncSettingsPanel();
     }
@@ -2114,15 +2177,6 @@
       renderViews();
     }
 
-    function clearAllWeeks(){
-      savedWeekRecords=[];
-      rebuildWeekCache();
-      activeWeekIds=[];
-      persistActiveSelection(activeWeekIds);
-      settingsDrawerOpen=false;
-      updateWeekSelectionUI();
-      renderViews();
-    }
 
     // ---------- Layout & Draw ----------
     function drawDayCard(container,label,rows,ctx={}){
@@ -4013,6 +4067,27 @@
       renderViews();
     }
 
+    function downloadBlobAsFile(blob,filename){
+      if(!blob) return;
+      const url=URL.createObjectURL(blob);
+      const link=document.createElement('a');
+      const supportsDownload=typeof link.download==='string';
+      link.href=url;
+      link.download=filename||'rota_schedule.pdf';
+      link.rel='noopener';
+      if(supportsDownload){
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+      }else{
+        const opened=window.open(url,'_blank','noopener');
+        if(!opened){
+          window.location.href=url;
+        }
+      }
+      setTimeout(()=>URL.revokeObjectURL(url),10000);
+    }
+
     async function exportPDF(btn){
       if(!btn) return;
       const weeks=getActiveWeekData();
@@ -4077,14 +4152,7 @@
         const exportLabel=sanitizeFileName(baseName);
         const pdfBytes=await pdfDoc.save();
         const blob=new Blob([pdfBytes],{type:'application/pdf'});
-        const url=URL.createObjectURL(blob);
-        const link=document.createElement('a');
-        link.href=url;
-        link.download=`${exportLabel||'rota'}_schedule.pdf`;
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
-        setTimeout(()=>URL.revokeObjectURL(url),5000);
+        downloadBlobAsFile(blob,`${exportLabel||'rota'}_schedule.pdf`);
       }catch(err){
         console.error(err);
         alert(`Failed to export PDF: ${err.message}`);
@@ -4171,14 +4239,7 @@
         drawPdfSheet(page,plan,{fonts:{regular:fontRegular,bold:fontBold},palette,rgb,margin:24});
         const pdfBytes=await pdfDoc.save();
         const blob=new Blob([pdfBytes],{type:'application/pdf'});
-        const url=URL.createObjectURL(blob);
-        const link=document.createElement('a');
-        link.href=url;
-        link.download=`${sanitizeFileName(resolvedName||'schedule')}_schedule.pdf`;
-        document.body.appendChild(link);
-        link.click();
-        link.remove();
-        setTimeout(()=>URL.revokeObjectURL(url),5000);
+        downloadBlobAsFile(blob,`${sanitizeFileName(resolvedName||'schedule')}_schedule.pdf`);
       }catch(err){
         console.error(err);
         alert(`Failed to export PDF: ${err.message}`);
@@ -4633,7 +4694,6 @@
     const btnDismissHint=document.getElementById('btnDismissHint');
     const fileInput=document.getElementById('fileInput');
     const btnUpload=document.getElementById('btnUpload');
-    const btnClearWeeks=document.getElementById('btnClearWeeks');
     const uploadLogPanel=document.getElementById('uploadLogPanel');
     const uploadLogContainer=document.getElementById('uploadLog');
     const btnClearLog=document.getElementById('btnClearLog');
@@ -5069,30 +5129,8 @@
     if(exportButton){
       exportButton.addEventListener('click',()=>{ exportSelectedPDF(); });
     }
-    if(btnClearWeeks){
-      btnClearWeeks.addEventListener('click',()=>{ clearAllWeeks(); });
-    }
 
-    const savedWeekSelect=document.getElementById('savedWeekSelect');
-    if(savedWeekSelect){
-      savedWeekSelect.addEventListener('change',()=>{
-        const value=savedWeekSelect.value;
-        setActiveWeeks(value?[value]:[],{persist:true});
-        ensureActiveWeeks();
-        updateWeekSelectionUI();
-        renderViews();
-      });
-    }
 
-    const btnForgetWeek=document.getElementById('btnForgetWeek');
-    if(btnForgetWeek){
-      btnForgetWeek.addEventListener('click',()=>{
-        const value=savedWeekSelect?savedWeekSelect.value:'';
-        if(value){
-          removeWeekRecord(value);
-        }
-      });
-    }
 
     const btnToggleSettings=document.getElementById('btnToggleSettings');
     if(btnToggleSettings){

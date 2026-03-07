@@ -2258,6 +2258,7 @@
     let lineViewCurrentDayLabel='';
     let lineViewBaseMinutesPerPixel=null;
     let lineViewUserSelectedDay=false;
+    let lineCoverageWarningMode='all';
 
     function setCurrentIndividualSelection(indices,{suppressLineReset=false,maxIndex}={}){
       const limit=Number.isInteger(maxIndex)?Math.max(0,maxIndex):Infinity;
@@ -2373,6 +2374,20 @@
       if(!Array.isArray(perDay)) return [];
       if(!Array.isArray(selectedRows) || !selectedRows.length) return perDay;
       return perDay.map(entries=>filterEntriesBySelection(entries,selectedRows));
+    }
+
+    function isManagementRow(row){
+      if(!row) return false;
+      const candidate=`${row.rawName||''} ${row.name||''}`.toLowerCase();
+      return MANAGEMENT_SHORTCUT_NAMES.some(name=>candidate.includes(name));
+    }
+
+    function resolveLineCoverageWarningMode(selectionRecords){
+      const records=Array.isArray(selectionRecords)?selectionRecords.filter(Boolean):[];
+      if(!records.length) return 'all';
+      const allManagement=records.every(item=>isManagementRow(item.row));
+      if(allManagement) return 'management';
+      return 'none';
     }
 
     function resolveDateRangeLabelForWeek(model,metadata,layout){
@@ -2532,6 +2547,36 @@
       return merged;
     }
 
+    function buildManagementCoverageWarnings(entries){
+      const windowStart=6*60;
+      const windowEnd=23*60;
+      const covered=extractSegmentsFromEntries(entries)
+        .map(seg=>({start:Math.max(windowStart,seg.start),end:Math.min(windowEnd,seg.end)}))
+        .filter(seg=>seg.end>seg.start)
+        .sort((a,b)=>a.start-b.start);
+      const merged=[];
+      covered.forEach(seg=>{
+        const last=merged[merged.length-1];
+        if(last && seg.start<=last.end){
+          last.end=Math.max(last.end,seg.end);
+        }else{
+          merged.push({...seg});
+        }
+      });
+      const missing=[];
+      let cursor=windowStart;
+      merged.forEach(seg=>{
+        if(seg.start>cursor){
+          missing.push({start:cursor,end:seg.start,count:0});
+        }
+        cursor=Math.max(cursor,seg.end);
+      });
+      if(cursor<windowEnd){
+        missing.push({start:cursor,end:windowEnd,count:0});
+      }
+      return missing;
+    }
+
     function resetLineCoverageWarnings(){
       if(!lineChartWarnings) return;
       lineChartWarnings.innerHTML='';
@@ -2541,7 +2586,12 @@
 
     function renderLineCoverageWarnings(entries,dayLabel=''){ 
       if(!lineChartWarnings) return;
-      const warnings=buildCoverageWarnings(entries);
+      let warnings=[];
+      if(lineCoverageWarningMode==='all'){
+        warnings=buildCoverageWarnings(entries);
+      }else if(lineCoverageWarningMode==='management'){
+        warnings=buildManagementCoverageWarnings(entries);
+      }
       if(!warnings.length){
         resetLineCoverageWarnings();
         return;
@@ -2565,8 +2615,12 @@
         textWrapper.className='line-warning-text';
         const rangeLabel=`${fmtHMDisplay(segment.start)} – ${fmtHMDisplay(segment.end)}`;
         const message=document.createElement('div');
-        const labelBase=segment.count===1?'one colleague':'two colleagues';
-        message.textContent=`Only ${labelBase} scheduled between ${rangeLabel}.`;
+        if(lineCoverageWarningMode==='management'){
+          message.textContent=`No colleagues scheduled between ${rangeLabel}.`;
+        }else{
+          const labelBase=segment.count===1?'one colleague':'two colleagues';
+          message.textContent=`Only ${labelBase} scheduled between ${rangeLabel}.`;
+        }
         textWrapper.appendChild(message);
         if(dayLabel){
           const detail=document.createElement('div');
@@ -3174,6 +3228,7 @@
       const selectionRecords=getSelectionRecords(model);
       const selectedRows=selectionRecords.map(item=>item.row);
       const selectionCount=selectionRecords.length;
+      lineCoverageWarningMode=resolveLineCoverageWarningMode(selectionRecords);
       const filteredPerDay=filterPerDayEntries(perDay,selectedRows);
       const dateRangeLabel=resolveDateRangeLabelForWeek(model,week.metadata,layout) || '';
       if(selectionCount===1){

@@ -727,6 +727,11 @@
       return date;
     }
 
+    function formatIsoLocalDate(date){
+      if(!(date instanceof Date) || Number.isNaN(date.getTime())) return null;
+      return `${date.getFullYear()}-${pad2(date.getMonth()+1)}-${pad2(date.getDate())}`;
+    }
+
     function resolveFallbackYear(parsedHeaders,model){
       const withYear=parsedHeaders.find(info=>info && Number.isInteger(info.year));
       if(withYear) return withYear.year;
@@ -767,8 +772,8 @@
       const lastPart=lastIdx>=0?parsed[lastIdx]:null;
       const startDate=dateFromParts(firstPart,fallbackYear);
       const endDate=dateFromParts(lastPart,fallbackYear);
-      const startIso=startDate?startDate.toISOString().slice(0,10):null;
-      const endIso=endDate?endDate.toISOString().slice(0,10):null;
+      const startIso=formatIsoLocalDate(startDate);
+      const endIso=formatIsoLocalDate(endDate);
       const rangeLabel=buildDateRangeLabel(model);
       let label='';
       if(firstIdx>=0){
@@ -1731,7 +1736,7 @@
         persistActiveSelection(activeWeekIds);
         return;
       }
-      const todayIso=new Date().toISOString().slice(0,10);
+      const todayIso=formatIsoLocalDate(new Date());
       const preferred=available.find(record=>recordCoversIsoDate(record,todayIso));
       const target=preferred||available[0]||null;
       activeWeekIds=target?[target.id]:[];

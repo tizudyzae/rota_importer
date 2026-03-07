@@ -1674,8 +1674,8 @@
 
     function buildReportScopePillStyleForOption(optionValue){
       const idx=parseInt(optionValue,10);
-      if(!Number.isInteger(idx) || idx<0 || idx>=lastIndividuals.length) return '';
-      const person=lastIndividuals[idx];
+      if(!Number.isInteger(idx) || idx<0) return '';
+      const person=lastIndividuals.find(item=>item && item.index===idx);
       const color=person?getStoredColorForEntry(person):null;
       if(!color) return '';
       const ink=getContrastTextColor(color);
@@ -1828,16 +1828,18 @@
       return defaultPickerColor;
     }
 
-    function refreshReportsForAppearanceChange(){
+    function refreshReportsForAppearanceChange({includeAppearanceControls=true}={}){
       const weeks=getActiveWeekData();
       updateIndividualControls(weeks);
-      syncAppearanceControls(weeks);
+      if(includeAppearanceControls){
+        syncAppearanceControls(weeks);
+      }
       renderScheduleView(weeks);
       renderLineView(weeks);
       renderPdfPreview(weeks);
     }
 
-    function handleColorPreferenceChange(key,color){
+    function handleColorPreferenceChange(key,color,{includeAppearanceControls=true}={}){
       if(!key) return;
       const normalized=normalizeColorHex(color);
       if(normalized){
@@ -1846,7 +1848,7 @@
         colorPreferenceMap.delete(key);
       }
       persistColorPreferences();
-      refreshReportsForAppearanceChange();
+      refreshReportsForAppearanceChange({includeAppearanceControls});
     }
 
     function handleAliasPreferenceChange(key,alias){
@@ -3998,6 +4000,9 @@
         input.disabled=entry.locked;
         if(!entry.locked){
           input.addEventListener('input',event=>{
+            handleColorPreferenceChange(entry.key,event.target.value,{includeAppearanceControls:false});
+          });
+          input.addEventListener('change',event=>{
             handleColorPreferenceChange(entry.key,event.target.value);
           });
         }
@@ -5392,6 +5397,23 @@
       return true;
     }
 
+    function normalizeLineStartAcrossDays(rawStart,maxStart){
+      if(!Number.isFinite(rawStart) || !Number.isFinite(maxStart) || maxStart<=0){
+        return {dayShift:0,start:rawStart};
+      }
+      let dayShift=0;
+      let normalizedStart=rawStart;
+      while(normalizedStart>maxStart){
+        normalizedStart-=maxStart;
+        dayShift+=1;
+      }
+      while(normalizedStart<0){
+        normalizedStart+=maxStart;
+        dayShift-=1;
+      }
+      return {dayShift,start:normalizedStart};
+    }
+
     function getLineTrackMetrics(){
       if(!lineChartRows) return null;
       const firstTrack=lineChartRows.querySelector('.line-row-track');
@@ -5508,17 +5530,7 @@
       const maxStart=Math.max(0,1440-lineViewState.windowMinutes);
       const rawStart=lineViewDrag.startMinute-minutesDelta;
       if(maxStart>0){
-        let dayShift=0;
-        let normalizedStart=rawStart;
-        const daySpan=1440;
-        while(normalizedStart>maxStart){
-          normalizedStart-=daySpan;
-          dayShift+=1;
-        }
-        while(normalizedStart<0){
-          normalizedStart+=daySpan;
-          dayShift-=1;
-        }
+        const {dayShift,start:normalizedStart}=normalizeLineStartAcrossDays(rawStart,maxStart);
         if(dayShift!==0){
           const moved=shiftLineViewDayAndWeek(dayShift,normalizedStart);
           if(moved){
@@ -5554,16 +5566,7 @@
       const maxStart=Math.max(0,1440-lineViewState.windowMinutes);
       const rawStart=lineViewState.startMinute+minutesDelta;
       if(maxStart>0){
-        let dayShift=0;
-        let normalizedStart=rawStart;
-        while(normalizedStart>maxStart){
-          normalizedStart-=1440;
-          dayShift+=1;
-        }
-        while(normalizedStart<0){
-          normalizedStart+=1440;
-          dayShift-=1;
-        }
+        const {dayShift,start:normalizedStart}=normalizeLineStartAcrossDays(rawStart,maxStart);
         if(dayShift!==0){
           const moved=shiftLineViewDayAndWeek(dayShift,normalizedStart);
           if(moved){

@@ -188,6 +188,20 @@ def parse_shift_cell(cell: str) -> tuple[str, str]:
     return start_time, end_time
 
 
+def normalize_employee_name(name: str) -> str:
+    cleaned = clean_cell(name)
+    if not cleaned:
+        return ""
+
+    cleaned = EMPLOYEE_ID_RE.sub("", cleaned).strip()
+
+    if "," in cleaned:
+        _surname, forename = cleaned.split(",", 1)
+        cleaned = forename.strip()
+
+    return cleaned
+
+
 def infer_year_from_filename(filename: str) -> str:
     match = re.search(r"(20\d{2})", filename)
     if match:
@@ -213,7 +227,7 @@ def parse_pdf_to_shift_rows(pdf_path: Path, original_filename: str) -> List[dict
     shifts: List[dict] = []
 
     for idx, row in enumerate(table_rows, start=1):
-        employee = clean_cell(row[0])
+        employee = normalize_employee_name(row[0])
         if not employee or employee.lower() == "employee":
             continue
 

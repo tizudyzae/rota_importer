@@ -561,13 +561,57 @@
       return `${n}th`;
     }
 
-    function parseDayHeader(label){
+    function inferDateOrder(dayHeaders,model){
+      if(!Array.isArray(dayHeaders) || !dayHeaders.length) return 'DM';
+      const fallbackYear=extractYearFromLabel(model && model.sub) || extractYearFromLabel(model && model.title) || new Date().getFullYear();
+      let dayFirstScore=0;
+      let monthFirstScore=0;
+      const rows=[];
+      dayHeaders.forEach(label=>{
+        if(!label) return;
+        const match=String(label).match(/([A-Za-z]{3,})\s*\(?\s*(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\s*\)?/);
+        if(!match) return;
+        const dayPart=match[1] || '';
+        const first=parseInt(match[2],10);
+        const second=parseInt(match[3],10);
+        const rawYear=match[4];
+        const parsedYear=rawYear ? parseInt(rawYear,10) : null;
+        const year=(Number.isInteger(parsedYear) && !Number.isNaN(parsedYear))?(rawYear.length===2?2000+parsedYear:parsedYear):fallbackYear;
+        if(first>12 && second<=12) dayFirstScore+=4;
+        if(second>12 && first<=12) monthFirstScore+=4;
+        const weekdayKey=dayPart.slice(0,3).toLowerCase();
+        const weekday=Object.keys(DAY_NAME_MAP).indexOf(weekdayKey);
+        const dayFirstDate=new Date(year,second-1,first);
+        const monthFirstDate=new Date(year,first-1,second);
+        if(weekday>=0){
+          if(!Number.isNaN(dayFirstDate.getTime()) && dayFirstDate.getDay()===weekday) dayFirstScore+=2;
+          if(!Number.isNaN(monthFirstDate.getTime()) && monthFirstDate.getDay()===weekday) monthFirstScore+=2;
+        }
+        rows.push({dayFirstDate,monthFirstDate});
+      });
+      for(let i=1;i<rows.length;i+=1){
+        const prev=rows[i-1];
+        const curr=rows[i];
+        if(prev && curr){
+          const dayFirstDiff=Math.round((curr.dayFirstDate-prev.dayFirstDate)/86400000);
+          const monthFirstDiff=Math.round((curr.monthFirstDate-prev.monthFirstDate)/86400000);
+          if(dayFirstDiff===1) dayFirstScore+=1;
+          if(monthFirstDiff===1) monthFirstScore+=1;
+        }
+      }
+      return monthFirstScore>dayFirstScore?'MD':'DM';
+    }
+
+    function parseDayHeader(label,dateOrder='DM'){
       if(!label) return null;
       const match=label.match(/([A-Za-z]{3,})\s*\(?\s*(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?\s*\)?/);
       if(!match) return null;
-      const [,dayPart,dayStr,monthStr,yearStr]=match;
-      const dayNum=parseInt(dayStr,10);
-      const monthNum=parseInt(monthStr,10);
+      const [,dayPart,firstStr,secondStr,yearStr]=match;
+      const firstNum=parseInt(firstStr,10);
+      const secondNum=parseInt(secondStr,10);
+      const monthFirst=dateOrder==='MD';
+      const dayNum=monthFirst?secondNum:firstNum;
+      const monthNum=monthFirst?firstNum:secondNum;
       if(Number.isNaN(dayNum) || Number.isNaN(monthNum)) return null;
       const key=dayPart.slice(0,3).toLowerCase();
       const dayName=DAY_NAME_MAP[key] || dayPart;
@@ -610,8 +654,8 @@
       return part.day===todayDay && part.month===todayMonth;
     }
 
-    function formatFullDayLabel(label){
-      const parsed=parseDayHeader(label);
+    function formatFullDayLabel(label,dateOrder='DM'){
+      const parsed=parseDayHeader(label,dateOrder);
       if(!parsed) return label;
       const monthName=MONTH_NAMES[parsed.month-1] || '';
       const pieces=[parsed.dayName || '', ordinal(parsed.day), monthName];
@@ -619,8 +663,8 @@
       return pieces.filter(Boolean).join(' ');
     }
 
-    function formatShortDayLabel(label){
-      const parsed=parseDayHeader(label);
+    function formatShortDayLabel(label,dateOrder='DM'){
+      const parsed=parseDayHeader(label,dateOrder);
       if(!parsed) return label || '';
       const abbrev=(parsed.dayName||'').slice(0,3);
       const parts=[];
@@ -652,13 +696,13 @@
       return `${day}/${month}${part.year?`/${part.year}`:''}`;
     }
 
-    function buildDateRangeLabel(model){
+    function buildDateRangeLabel(model,dateOrder='DM'){
       if(model && typeof model.sub==='string'){
         const match=model.sub.match(/Date\s*range\s*:\s*(.+)/i);
         if(match) return `Date range: ${match[1].trim()}`;
       }
       if(!model || !Array.isArray(model.dayHeaders) || !model.dayHeaders.length) return '';
-      const parsed=model.dayHeaders.map(parseDayHeader).filter(Boolean);
+      const parsed=model.dayHeaders.map(header=>parseDayHeader(header,dateOrder)).filter(Boolean);
       if(!parsed.length) return '';
       const start=parsed[0];
       const end=parsed[parsed.length-1];
@@ -742,9 +786,9 @@
       return null;
     }
 
-    function findTodayDayIndex(dayHeaders,model){
+    function findTodayDayIndex(dayHeaders,model,dateOrder='DM'){
       if(!Array.isArray(dayHeaders) || !dayHeaders.length) return -1;
-      const parsed=dayHeaders.map(parseDayHeader);
+      const parsed=dayHeaders.map(header=>parseDayHeader(header,dateOrder));
       if(!parsed.length) return -1;
       const fallbackYear=resolveFallbackYear(parsed,model||{});
       for(let i=0;i<parsed.length;i+=1){
@@ -757,7 +801,8 @@
 
     function deriveWeekMetadata(model){
       const dayHeaders=Array.isArray(model && model.dayHeaders)?model.dayHeaders:[];
-      const parsed=dayHeaders.map(parseDayHeader);
+      const dateOrder=inferDateOrder(dayHeaders,model);
+      const parsed=dayHeaders.map(header=>parseDayHeader(header,dateOrder));
       const fallbackYear=resolveFallbackYear(parsed,model||{});
       const firstIdx=parsed.findIndex(part=>part && Number.isInteger(part.day) && Number.isInteger(part.month));
       let lastIdx=-1;
@@ -774,10 +819,10 @@
       const endDate=dateFromParts(lastPart,fallbackYear);
       const startIso=formatIsoLocalDate(startDate);
       const endIso=formatIsoLocalDate(endDate);
-      const rangeLabel=buildDateRangeLabel(model);
+      const rangeLabel=buildDateRangeLabel(model,dateOrder);
       let label='';
       if(firstIdx>=0){
-        label=`Week of ${formatFullDayLabel(dayHeaders[firstIdx])}`;
+        label=`Week of ${formatFullDayLabel(dayHeaders[firstIdx],dateOrder)}`;
       }else if(rangeLabel){
         label=rangeLabel;
       }else if(model && typeof model.title==='string' && model.title.trim()){
@@ -787,7 +832,7 @@
       }
       const fingerprint=[model && model.title?model.title:'',model && model.sub?model.sub:'',dayHeaders.join('|')].join('::');
       const id=startIso?`week-${startIso}`:hashWeekKey(fingerprint);
-      return {id,label,startIso,endIso,displayRange:rangeLabel||''};
+      return {id,label,startIso,endIso,displayRange:rangeLabel||'',dateOrder};
     }
 
     const DEFAULT_LAYOUT={
@@ -2072,6 +2117,7 @@
     let lineViewLastWeekId=null;
     let lineViewLastDayIndex=null;
     let lineViewCurrentEntries=[];
+    let lineViewDateOrder='DM';
     let lineViewCurrentLookup=new Map();
     let lineViewCurrentDayLabel='';
     let lineViewBaseMinutesPerPixel=null;
@@ -2197,7 +2243,8 @@
       if(layout && typeof layout.subtitleOverride==='string' && layout.subtitleOverride.trim()){
         return layout.subtitleOverride.trim();
       }
-      const auto=buildDateRangeLabel(model);
+      const dateOrder=(metadata && metadata.dateOrder)||inferDateOrder(Array.isArray(model && model.dayHeaders)?model.dayHeaders:[],model);
+      const auto=buildDateRangeLabel(model,dateOrder);
       if(auto) return auto;
       if(metadata && metadata.displayRange) return metadata.displayRange;
       return '';
@@ -2504,7 +2551,7 @@
         return;
       }
       if(lineDaySelect){
-        const options=dayLabels.map((label,idx)=>`<option value="${idx}">${formatShortDayLabel(label)||`Day ${idx+1}`}</option>`);
+        const options=dayLabels.map((label,idx)=>`<option value="${idx}">${formatShortDayLabel(label,lineViewDateOrder)||`Day ${idx+1}`}</option>`);
         lineDaySelect.innerHTML=options.join('');
         lineDaySelect.disabled=dayLabels.length<=1;
         const desired=Math.min(Math.max(lineViewState.dayIndex||0,0),dayLabels.length-1);
@@ -2513,7 +2560,7 @@
       }
       if(lineDaySummary){
         const label=dayLabels[lineViewState.dayIndex]||`Day ${lineViewState.dayIndex+1}`;
-        lineDaySummary.textContent=formatFullDayLabel(label)||label;
+        lineDaySummary.textContent=formatFullDayLabel(label,lineViewDateOrder)||label;
         lineDaySummary.hidden=false;
       }
       if(lineChartShell){
@@ -2858,7 +2905,7 @@
         header.className='line-week-row-header';
         const dayName=document.createElement('div');
         dayName.className='line-week-row-day';
-        dayName.textContent=formatShortDayLabel(label)||`Day ${idx+1}`;
+        dayName.textContent=formatShortDayLabel(label,lineViewDateOrder)||`Day ${idx+1}`;
         header.appendChild(dayName);
         const timeBlock=document.createElement('div');
         timeBlock.className='line-week-row-time';
@@ -2969,6 +3016,7 @@
           lineViewEmpty.hidden=false;
         }
         lineViewCurrentEntries=[];
+        lineViewDateOrder='DM';
         lineViewCurrentLookup=new Map();
         lineViewCurrentDayLabel='';
         lineViewStateInitialized=false;
@@ -2986,6 +3034,7 @@
       }
       const perDay=Array.isArray(week.perDay)?week.perDay:[];
       const dayHeaders=Array.isArray(model.dayHeaders)?model.dayHeaders:[];
+      lineViewDateOrder=(week.metadata && week.metadata.dateOrder)||inferDateOrder(dayHeaders,model);
       const layout=currentLayout || DEFAULT_LAYOUT;
       const selectionRecords=getSelectionRecords(model);
       const selectedRows=selectionRecords.map(item=>item.row);
@@ -3034,7 +3083,8 @@
         lineViewUserSelectedDay=false;
       }
       if(!lineViewUserSelectedDay){
-        const todayIndex=findTodayDayIndex(dayHeaders,model);
+        const dateOrder=(week.metadata && week.metadata.dateOrder)||inferDateOrder(dayHeaders,model);
+        const todayIndex=findTodayDayIndex(dayHeaders,model,dateOrder);
         if(todayIndex>=0){
           lineViewState.dayIndex=todayIndex;
         }
@@ -3068,7 +3118,7 @@
       lineViewCurrentDayLabel=dayLabels[lineViewState.dayIndex]||`Day ${lineViewState.dayIndex+1}`;
       syncLineViewControls(dayLabels);
       if(lineDaySummary && !lineDaySummary.hidden){
-        const baseLabel=formatFullDayLabel(lineViewCurrentDayLabel)||lineViewCurrentDayLabel;
+        const baseLabel=formatFullDayLabel(lineViewCurrentDayLabel,lineViewDateOrder)||lineViewCurrentDayLabel;
         if(selectionCount>1){
           lineDaySummary.textContent=`${baseLabel} — ${selectionCount} selected`;
         }else{
@@ -3116,9 +3166,10 @@
         container.appendChild(placeholder);
         return;
       }
-      const formattedDates=dayHeaders.map(formatFullDayLabel);
+      const dateOrder=(week.metadata && week.metadata.dateOrder)||inferDateOrder(dayHeaders,model);
+      const formattedDates=dayHeaders.map(label=>formatFullDayLabel(label,dateOrder));
       const dateRangeLabel=resolveDateRangeLabelForWeek(model,week.metadata,layout);
-      const parsedHeaders=dayHeaders.map(parseDayHeader);
+      const parsedHeaders=dayHeaders.map(label=>parseDayHeader(label,dateOrder));
       const fallbackYear=(()=>{
         const withYear=parsedHeaders.find(info=>info && Number.isInteger(info.year));
         if(withYear) return withYear.year;
@@ -3162,7 +3213,7 @@
           if(match && match.highlight) item.classList.add('highlight');
           const dayEl=document.createElement('div');
           dayEl.className='individual-item-day';
-          dayEl.textContent=formatShortDayLabel(label) || `Day ${idx+1}`;
+          dayEl.textContent=formatShortDayLabel(label,dateOrder) || `Day ${idx+1}`;
           item.appendChild(dayEl);
           const timeWrap=document.createElement('div');
           timeWrap.className='individual-item-time';
@@ -3344,7 +3395,8 @@
         sheets.appendChild(placeholder);
         return;
       }
-      const formattedDates=dayHeaders.map(formatFullDayLabel);
+      const dateOrder=(week.metadata && week.metadata.dateOrder)||inferDateOrder(dayHeaders,model);
+        const formattedDates=dayHeaders.map(label=>formatFullDayLabel(label,dateOrder));
       const dateRangeLabel=resolveDateRangeLabelForWeek(model,week.metadata,layout);
       const selectionRecords=allowIndividual?getSelectionRecords(model):[];
       const selectedRows=selectionRecords.map(item=>item.row);
@@ -3356,8 +3408,8 @@
         const displayName=(selected.record && selected.record.displayName) || getRowDisplayName(person,selected.index+1);
         const dayRows=[];
         dayHeaders.forEach((label,dayIdx)=>{
-          const parsed=parseDayHeader(label);
-          const dayName=(parsed && parsed.dayName) || formatShortDayLabel(label) || label || `Day ${dayIdx+1}`;
+          const parsed=parseDayHeader(label,dateOrder);
+          const dayName=(parsed && parsed.dayName) || formatShortDayLabel(label,dateOrder) || label || `Day ${dayIdx+1}`;
           const entries=Array.isArray(perDayForPreview[dayIdx])?perDayForPreview[dayIdx]:[];
           const match=entries.find(entry=>entryMatchesSelection(entry,person));
           const range=match && match.range?{...match.range}:null;
@@ -3642,7 +3694,8 @@
         const filteredPerDay=selectedRows.length?filterPerDayEntries(perDay,selectedRows):perDay;
         const totalPages=Math.max(dayHeaders.length,1);
         let pageNumber=1;
-        const formattedDates=dayHeaders.map(formatFullDayLabel);
+        const dateOrder=(week.metadata && week.metadata.dateOrder)||inferDateOrder(dayHeaders,model);
+        const formattedDates=dayHeaders.map(label=>formatFullDayLabel(label,dateOrder));
         const dateRangeLabel=resolveDateRangeLabelForWeek(model,week.metadata,layout);
         dayHeaders.forEach((label,idx)=>{
           const rows=filteredPerDay[idx]||[];
@@ -3721,10 +3774,11 @@
       const palette=buildPdfPalette(layout);
       const dateRangeLabel=resolveDateRangeLabelForWeek(model,week.metadata,layout);
       const dayHeaders=Array.isArray(model.dayHeaders)?model.dayHeaders:[];
+      const dateOrder=(week.metadata && week.metadata.dateOrder)||inferDateOrder(dayHeaders,model);
       const dayRows=[];
       dayHeaders.forEach((label,dayIdx)=>{
-        const parsed=parseDayHeader(label);
-        const dayName=(parsed && parsed.dayName)||label;
+        const parsed=parseDayHeader(label,dateOrder);
+        const dayName=(parsed && parsed.dayName)||formatShortDayLabel(label,dateOrder)||label;
         const entries=Array.isArray(perDay[dayIdx])?perDay[dayIdx]:[];
         const match=entries.find(entry=>{
           if(person.rawName && entry.rawName){

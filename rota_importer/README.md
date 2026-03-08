@@ -27,74 +27,65 @@ Because `addon_config:rw` is mapped, the add-on writes to `/config` inside the c
 
 ## Use with Home Assistant automations (notifications)
 
-Yes — and now there is a dedicated shifts API for that use case.
+Yes — you can send notifications with rota data using Home Assistant automations.
 
-Use `GET /api/shifts` to query who is working on specific dates or date ranges.
+The recommended approach is to call this add-on's HTTP API from Home Assistant (instead of querying SQLite directly from an automation).
 
-### Query endpoint for "who is working when"
+### Why API-first
 
-`/api/shifts` supports these query parameters:
+- Works with standard Home Assistant `rest` integration and templates.
+- Avoids direct SQLite file access and locking concerns.
+- Keeps your automation independent from DB schema changes.
 
-- `date_from` (`YYYY-MM-DD`) optional
-- `date_to` (`YYYY-MM-DD`) optional
-- `employee` optional exact-name filter (case-insensitive)
-- `working_only` (`true`/`false`) optional; when true, only rows with start/end times are returned
-- `limit` optional (1..500, default 300)
+### Example: fetch uploads and notify when a new upload appears
 
-Example:
-
-```text
-/api/shifts?date_from=2026-03-10&date_to=2026-03-10&working_only=true
-```
-
-Response includes:
-
-- `items`: flat row list from the DB (employee, shift_date, start/end, raw cell, upload metadata)
-- `by_date`: grouped workers per date with `worker_count`
-
-### Home Assistant example (REST sensor + notification)
+Add a REST sensor in `configuration.yaml` (or split package):
 
 ```yaml
 sensor:
   - platform: rest
-    name: rota_workers_today
-    resource_template: >-
-      http://YOUR_ADDON_HOST:8099/api/shifts
-      ?date_from={{ now().strftime('%Y-%m-%d') }}
-      &date_to={{ now().strftime('%Y-%m-%d') }}
-      &working_only=true
+    name: rota_importer_uploads
+    # Replace host with your add-on endpoint reachable by Home Assistant.
+    # Common options are an internal hostname, reverse proxy path, or direct URL.
+    resource: http://YOUR_ADDON_HOST:8099/api/uploads
     method: GET
     scan_interval: 300
-    value_template: "{{ value_json.count }}"
+    value_template: "{{ value_json | count }}"
     json_attributes:
-      - by_date
+      - 0
 ```
+
+Then create an automation that uses the JSON attributes and sends a notification:
 
 ```yaml
 automation:
-  - alias: "Rota importer: notify who is working today"
+  - alias: "Rota importer: notify latest upload"
     mode: single
     trigger:
-      - platform: time
-        at: "07:00:00"
+      - platform: state
+        entity_id: sensor.rota_importer_uploads
+    condition:
+      - condition: template
+        value_template: >-
+          {{ trigger.to_state.state not in ['unknown', 'unavailable'] }}
     action:
       - service: notify.mobile_app_your_phone
         data:
-          title: "Today's rota"
+          title: "Rota upload update"
           message: >-
-            {% set groups = state_attr('sensor.rota_workers_today', 'by_date') or [] %}
-            {% set today = (groups | first) if groups else None %}
-            {% if not today %}
-              No scheduled shifts found today.
-            {% else %}
-              {{ today.worker_count }} working today:
-              {% for person in today.workers %}
-                {{ person.employee }} ({{ person.start_time }}-{{ person.end_time }}){% if not loop.last %}, {% endif %}
-              {% endfor %}
-            {% endif %}
+            Latest file: {{ state_attr('sensor.rota_importer_uploads', '0').original_filename }}
+            | Upload ID: {{ state_attr('sensor.rota_importer_uploads', '0').id }}
+            | Parsed rows: {{ state_attr('sensor.rota_importer_uploads', '0').row_count }}
 ```
 
-This is API-first (recommended), so automations do not need direct SQLite access.
+### More detailed payloads
+
+You can also use:
+
+- `/api/upload/<id>/model` to get a full viewer model for one upload.
+- `/api/viewer_sync` to get all uploads in the viewer format.
+
+Use a second REST sensor or a `rest_command` and template the returned JSON into any `notify.*` service.
 
 ## Important
 

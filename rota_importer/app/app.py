@@ -69,6 +69,16 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS device_preferences (
+                device_id TEXT PRIMARY KEY,
+                color_preferences TEXT NOT NULL,
+                alias_preferences TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
         conn.commit()
 
 
@@ -379,6 +389,34 @@ def build_sync_payload() -> list[dict]:
     return [build_model_from_upload(row["id"]) for row in uploads]
 
 
+def sanitize_preferences_payload(payload: dict | None) -> tuple[dict, dict]:
+    payload = payload if isinstance(payload, dict) else {}
+    colors_raw = payload.get("colors")
+    aliases_raw = payload.get("aliases")
+
+    colors: dict[str, str] = {}
+    if isinstance(colors_raw, dict):
+        for key, value in colors_raw.items():
+            if not isinstance(key, str) or not isinstance(value, str):
+                continue
+            key_clean = key.strip()
+            value_clean = value.strip()
+            if key_clean and re.fullmatch(r"#[0-9a-fA-F]{6}", value_clean):
+                colors[key_clean] = value_clean.lower()
+
+    aliases: dict[str, str] = {}
+    if isinstance(aliases_raw, dict):
+        for key, value in aliases_raw.items():
+            if not isinstance(key, str) or not isinstance(value, str):
+                continue
+            key_clean = key.strip()
+            value_clean = value.strip()
+            if key_clean and value_clean:
+                aliases[key_clean] = value_clean[:120]
+
+    return colors, aliases
+
+
 @app.get("/", response_class=HTMLResponse)
 def viewer(request: Request):
     index_path = LOGGANNT_DIR / "index.html"
@@ -446,6 +484,70 @@ def api_upload_model(upload_id: int):
 @app.get("/api/viewer_sync")
 def api_viewer_sync():
     return JSONResponse(build_sync_payload())
+
+
+@app.get("/api/preferences/{device_id}")
+def api_get_preferences(device_id: str):
+    clean_device_id = re.sub(r"[^a-zA-Z0-9._-]", "", device_id or "")[:80]
+    if not clean_device_id:
+        raise HTTPException(status_code=400, detail="Invalid device id")
+
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT color_preferences, alias_preferences FROM device_preferences WHERE device_id = ?",
+            (clean_device_id,),
+        ).fetchone()
+
+    if not row:
+        return JSONResponse({"device_id": clean_device_id, "colors": {}, "aliases": {}})
+
+    try:
+        colors = json.loads(row["color_preferences"] or "{}")
+    except Exception:
+        colors = {}
+    try:
+        aliases = json.loads(row["alias_preferences"] or "{}")
+    except Exception:
+        aliases = {}
+
+    return JSONResponse(
+        {
+            "device_id": clean_device_id,
+            "colors": colors if isinstance(colors, dict) else {},
+            "aliases": aliases if isinstance(aliases, dict) else {},
+        }
+    )
+
+
+@app.put("/api/preferences/{device_id}")
+async def api_put_preferences(device_id: str, request: Request):
+    clean_device_id = re.sub(r"[^a-zA-Z0-9._-]", "", device_id or "")[:80]
+    if not clean_device_id:
+        raise HTTPException(status_code=400, detail="Invalid device id")
+
+    try:
+        body = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload") from exc
+
+    colors, aliases = sanitize_preferences_payload(body)
+    now = datetime.utcnow().isoformat(timespec="seconds")
+
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO device_preferences (device_id, color_preferences, alias_preferences, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(device_id) DO UPDATE SET
+              color_preferences=excluded.color_preferences,
+              alias_preferences=excluded.alias_preferences,
+              updated_at=excluded.updated_at
+            """,
+            (clean_device_id, json.dumps(colors), json.dumps(aliases), now),
+        )
+        conn.commit()
+
+    return JSONResponse({"ok": True, "device_id": clean_device_id})
 
 
 @app.post("/api/upload_pdf")

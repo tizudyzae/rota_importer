@@ -89,7 +89,7 @@
     .settings-week-empty{margin:0;font-size:13px;color:var(--muted);padding:10px 0}
     .settings-week-item{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:center;border:1px solid var(--border);border-radius:14px;padding:10px 12px;background:var(--surface-soft)}
     .settings-week-item-main{display:flex;align-items:flex-start;gap:10px;min-width:0;text-align:left}
-    .settings-week-item-main input{margin-top:2px}
+    .settings-week-item-main input{margin-top:2px;accent-color:var(--accent)}
     .settings-week-item-info{display:flex;flex-direction:column;gap:2px;min-width:0}
     .settings-week-item-label{font-weight:700;color:var(--ink);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .settings-week-item-range{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -149,8 +149,8 @@
     .report-scope-pill.active{background:var(--pill-active-bg,var(--accent));border-color:var(--pill-active-border,var(--accent));color:var(--pill-active-ink,#fff);box-shadow:0 10px 20px rgba(0,123,195,.18)}
     .report-scope-pill:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
     .viewer{display:flex;flex-direction:column;gap:20px}
-    .viewer-tabs{display:flex;gap:12px;flex-wrap:wrap;background:var(--surface);padding:12px;border-radius:24px;box-shadow:0 14px 30px rgba(9,42,58,.08);position:sticky;top:0;z-index:10}
-    .viewer-tab{appearance:none;border:1px solid rgba(0,0,0,.04);border-radius:999px;padding:clamp(10px,2vw,14px) clamp(12px,5vw,24px);font-size:clamp(12px,3vw,15px);font-weight:700;background:transparent;color:var(--muted);cursor:pointer;transition:all .2s ease;box-shadow:none;flex:1 1 150px;min-width:0;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .viewer-tabs{display:flex;gap:12px;flex-wrap:nowrap;overflow-x:auto;background:var(--surface);padding:12px;border-radius:24px;box-shadow:0 14px 30px rgba(9,42,58,.08);position:sticky;top:0;z-index:10}
+    .viewer-tab{appearance:none;border:1px solid rgba(0,0,0,.04);border-radius:999px;padding:clamp(10px,2vw,14px) clamp(12px,5vw,24px);font-size:clamp(12px,3vw,15px);font-weight:700;background:transparent;color:var(--muted);cursor:pointer;transition:all .2s ease;box-shadow:none;flex:0 0 auto;min-width:0;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
     .viewer-tab:hover{color:var(--accent)}
     .viewer-tab.active{background:var(--accent);color:#fff;border-color:var(--accent);box-shadow:0 10px 20px rgba(0,123,195,.18)}
     .view-panel{display:none}
@@ -176,8 +176,12 @@
     .line-preset-btn:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
     .line-preset-btn[disabled]{opacity:.5;cursor:not-allowed;box-shadow:none}
     .line-preset-btn.active{background:var(--accent);color:#fff;border-color:var(--accent);box-shadow:0 10px 20px rgba(0,123,195,.18)}
-    .line-chart-shell{position:relative;border:1px solid var(--border);border-radius:24px;background:var(--surface);box-shadow:0 18px 36px rgba(7,45,65,.08);padding:24px;display:flex;flex-direction:column;gap:18px;--line-axis-height:36px;--line-track-gap:12px;touch-action:none}
+    .line-chart-shell{position:relative;border:1px solid var(--border);border-radius:24px;background:var(--surface);box-shadow:0 18px 36px rgba(7,45,65,.08);padding:24px;display:flex;flex-direction:column;gap:18px;--line-axis-height:36px;--line-track-gap:12px;touch-action:pan-y pinch-zoom}
     .line-chart-shell[hidden]{display:none !important}
+    .line-chart-scroll-edge{position:absolute;top:0;bottom:0;width:14px;z-index:3;touch-action:pan-y;background:transparent}
+    .line-chart-scroll-edge.left{left:0}
+    .line-chart-scroll-edge.right{right:0}
+
     .line-chart-axis{position:relative;height:var(--line-axis-height)}
     .line-axis-tick{position:absolute;bottom:0;transform:translateX(-50%);display:flex;flex-direction:column;align-items:center;gap:6px;font-size:12px;color:var(--muted);white-space:nowrap}
     .line-axis-tick::before{content:"";width:1px;height:16px;background:var(--grid);display:block}
@@ -400,7 +404,7 @@
               <p class="saved-week-meta" id="savedWeekMeta" hidden></p>
             </div>
           </details>
-          <details class="control-section" open>
+          <details class="control-section">
             <summary>Colleague Selection</summary>
             <div class="control-section-body">
               <label class="ctrl" for="selIndividual" id="reportScopeControl" hidden aria-hidden="true">
@@ -449,6 +453,8 @@
                 </div>
               </div>
               <div class="line-chart-shell" id="lineChartShell" hidden aria-hidden="true">
+                <div class="line-chart-scroll-edge left" id="lineChartScrollEdgeLeft" aria-hidden="true"></div>
+                <div class="line-chart-scroll-edge right" id="lineChartScrollEdgeRight" aria-hidden="true"></div>
                 <div class="line-chart-axis" id="lineChartAxis"></div>
                 <div class="line-chart-rows" id="lineChartRows"></div>
               </div>
@@ -812,13 +818,49 @@
       return `Date range: ${startStr || endStr}`;
     }
 
+
+    const APP_BASE=(window.__APP_BASE__||'').replace(/\/$/,'');
     const STORAGE_KEY='loggannt.rotas.v1';
+    const STORAGE_DEVICE_KEY='loggannt.rotas.deviceId';
     const STORAGE_SELECTION_KEY='loggannt.rotas.selection';
     const STORAGE_VIEWER_SELECTION_KEY='loggannt.rotas.viewerSelection';
     const STORAGE_COLOR_KEY='loggannt.rotas.colors';
     const STORAGE_ALIAS_KEY='loggannt.rotas.aliases';
     const STORAGE_HOME_TIP_KEY='loggannt.rotas.homeTipDismissed';
     const MAX_STORED_WEEKS=4;
+
+
+    function apiUrl(path){
+      return `${APP_BASE}${path}`;
+    }
+
+    function getDeviceId(){
+      if(typeof window==='undefined' || !window.localStorage) return 'browser-unknown';
+      try{
+        const existing=window.localStorage.getItem(STORAGE_DEVICE_KEY);
+        if(existing) return existing;
+        const created=(window.crypto && window.crypto.randomUUID)?window.crypto.randomUUID():`dev-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+        window.localStorage.setItem(STORAGE_DEVICE_KEY,created);
+        return created;
+      }catch(err){
+        return 'browser-unknown';
+      }
+    }
+
+    const deviceId=getDeviceId();
+    let appearanceSyncTimer=null;
+
+    function formatShortWeekLabel(record){
+      if(!record || !record.metadata || !record.metadata.startIso) return (record && record.metadata && record.metadata.label) ? record.metadata.label : 'Saved rota';
+      const parsedIso=record.metadata.startIso.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      if(!parsedIso) return record.metadata.label||'Saved rota';
+      const day=parseInt(parsedIso[3],10);
+      const month=parseInt(parsedIso[2],10);
+      const shortMonths=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      const shortMonth=shortMonths[month-1]||'';
+      return `${ordinal(day)} ${shortMonth}`.trim();
+    }
+
 
     function sanitizeModelForStorage(model){
       if(!model || typeof model!=='object'){
@@ -923,7 +965,7 @@
       const rangeLabel=buildDateRangeLabel(model,dateOrder);
       let label='';
       if(firstIdx>=0){
-        label=`Week of ${formatFullDayLabel(dayHeaders[firstIdx],dateOrder)}`;
+        label=`${formatFullDayLabel(dayHeaders[firstIdx],dateOrder)}`;
       }else if(rangeLabel){
         label=rangeLabel;
       }else if(model && typeof model.title==='string' && model.title.trim()){
@@ -1712,6 +1754,7 @@
           payload[key]=value;
         });
         window.localStorage.setItem(STORAGE_COLOR_KEY,JSON.stringify(payload));
+        scheduleServerAppearanceSync();
       }catch(err){
         console.warn('Failed to store colour preferences:',err);
       }
@@ -1746,6 +1789,7 @@
         const payload={};
         aliasPreferenceMap.forEach((value,key)=>{ payload[key]=value; });
         window.localStorage.setItem(STORAGE_ALIAS_KEY,JSON.stringify(payload));
+        scheduleServerAppearanceSync();
       }catch(err){
         console.warn('Failed to store alias preferences:',err);
       }
@@ -1855,6 +1899,56 @@
       persistColorPreferences();
       persistAliasPreferences();
       refreshReportsForAppearanceChange();
+    }
+
+
+    async function fetchDeviceAppearancePreferences(){
+      if(!APP_BASE) return;
+      try{
+        const resp=await fetch(apiUrl(`/api/preferences/${encodeURIComponent(deviceId)}`),{cache:'no-store'});
+        if(!resp.ok) return;
+        const payload=await resp.json();
+        colorPreferenceMap.clear();
+        aliasPreferenceMap.clear();
+        if(payload && payload.colors && typeof payload.colors==='object'){
+          Object.entries(payload.colors).forEach(([key,val])=>{
+            const normalized=normalizeColorHex(val);
+            if(key && normalized) colorPreferenceMap.set(key,normalized);
+          });
+        }
+        if(payload && payload.aliases && typeof payload.aliases==='object'){
+          Object.entries(payload.aliases).forEach(([key,val])=>{
+            if(!key || typeof val!=='string') return;
+            const trimmed=val.trim();
+            if(trimmed) aliasPreferenceMap.set(key,trimmed);
+          });
+        }
+      }catch(err){
+        console.warn('Failed to load server appearance preferences:',err);
+      }
+    }
+
+    function scheduleServerAppearanceSync(){
+      if(!APP_BASE) return;
+      if(appearanceSyncTimer){
+        window.clearTimeout(appearanceSyncTimer);
+      }
+      appearanceSyncTimer=window.setTimeout(async ()=>{
+        appearanceSyncTimer=null;
+        try{
+          const colors={};
+          colorPreferenceMap.forEach((value,key)=>{ colors[key]=value; });
+          const aliases={};
+          aliasPreferenceMap.forEach((value,key)=>{ aliases[key]=value; });
+          await fetch(apiUrl(`/api/preferences/${encodeURIComponent(deviceId)}`),{
+            method:'PUT',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({colors,aliases})
+          });
+        }catch(err){
+          console.warn('Failed to persist server appearance preferences:',err);
+        }
+      },250);
     }
 
     function isHomeTipDismissed(){
@@ -2026,8 +2120,9 @@
     }
 
     function setActiveWeeks(ids,{persist=true}={}){
-      const nextId=Array.isArray(ids)?ids.find(id=>typeof id==='string' && cachedWeeks.has(id)):null;
-      activeWeekIds=nextId?[nextId]:[];
+      const candidates=Array.isArray(ids)?ids.filter(id=>typeof id==='string' && cachedWeeks.has(id)):[];
+      const unique=Array.from(new Set(candidates));
+      activeWeekIds=unique;
       if(persist) persistActiveSelection(activeWeekIds);
       constrainViewerWeeks({persist});
     }
@@ -2078,9 +2173,9 @@
         persistViewerSelection(viewerWeekIds);
         return;
       }
-      const valid=activeWeekIds.find(id=>cachedWeeks.has(id));
-      if(valid){
-        activeWeekIds=[valid];
+      const valid=activeWeekIds.filter(id=>cachedWeeks.has(id));
+      if(valid.length){
+        activeWeekIds=Array.from(new Set(valid));
       }else{
         const todayIso=formatIsoLocalDate(new Date());
         const preferred=available.find(record=>recordCoversIsoDate(record,todayIso));
@@ -2165,7 +2260,7 @@
             pill.className=`saved-week-pill${viewerWeekIds[0]===record.id?' active':''}`;
             pill.dataset.weekId=record.id;
             pill.setAttribute('aria-pressed',viewerWeekIds[0]===record.id?'true':'false');
-            pill.textContent=record.metadata && record.metadata.label?record.metadata.label:'Saved rota';
+            pill.textContent=formatShortWeekLabel(record);
             weekPills.appendChild(pill);
           });
           weekPills.setAttribute('aria-disabled','false');
@@ -2180,7 +2275,7 @@
         meta.hidden=!metaText;
       }
       if(settingsMeta){
-        settingsMeta.textContent=metaText?`Selected for viewer: ${metaText}`:'';
+        settingsMeta.textContent=metaText?`Viewing: ${metaText}`:'';
         settingsMeta.hidden=!metaText;
       }
       if(settingsWeekList){
@@ -2199,15 +2294,22 @@
             const main=document.createElement('label');
             main.className='settings-week-item-main';
 
-            const radio=document.createElement('input');
-            radio.type='radio';
-            radio.name='settingsAllowedWeek';
-            radio.value=record.id;
-            radio.checked=activeSet.has(record.id);
-            radio.addEventListener('change',()=>{
-              if(!radio.checked) return;
-              setActiveWeeks([record.id],{persist:true});
-              setViewerWeeks([record.id],{persist:true});
+            const checkbox=document.createElement('input');
+            checkbox.type='checkbox';
+            checkbox.name='settingsAllowedWeek';
+            checkbox.value=record.id;
+            checkbox.checked=activeSet.has(record.id);
+            checkbox.addEventListener('change',()=>{
+              const next=new Set(activeWeekIds);
+              if(checkbox.checked){
+                next.add(record.id);
+              }else{
+                next.delete(record.id);
+              }
+              setActiveWeeks(Array.from(next),{persist:true});
+              if(!viewerWeekIds.length && activeWeekIds.length){
+                setViewerWeeks([activeWeekIds[0]],{persist:true});
+              }
               updateWeekSelectionUI();
               renderViews();
             });
@@ -2217,7 +2319,7 @@
 
             const label=document.createElement('span');
             label.className='settings-week-item-label';
-            label.textContent=record.metadata && record.metadata.label?record.metadata.label:'Saved rota';
+            label.textContent=formatShortWeekLabel(record);
 
             const range=document.createElement('span');
             range.className='settings-week-item-range';
@@ -2225,7 +2327,7 @@
 
             info.appendChild(label);
             info.appendChild(range);
-            main.appendChild(radio);
+            main.appendChild(checkbox);
             main.appendChild(info);
 
             const del=document.createElement('button');
@@ -2543,6 +2645,8 @@
     const lineChartShell=document.getElementById('lineChartShell');
     const lineChartAxis=document.getElementById('lineChartAxis');
     const lineChartRows=document.getElementById('lineChartRows');
+    const lineChartScrollEdgeLeft=document.getElementById('lineChartScrollEdgeLeft');
+    const lineChartScrollEdgeRight=document.getElementById('lineChartScrollEdgeRight');
     const lineChartWarnings=document.getElementById('lineChartWarnings');
     const lineViewEmpty=document.getElementById('lineViewEmpty');
     const linePresetButtons=document.getElementById('linePresetButtons');
@@ -5557,6 +5661,8 @@
       const element=event.target instanceof Element?event.target:null;
       const inTrack=element?element.closest('.line-row-track'):null;
       const inAxis=element && lineChartAxis?lineChartAxis.contains(element):false;
+      const inScrollEdge=element && (element.closest('#lineChartScrollEdgeLeft') || element.closest('#lineChartScrollEdgeRight'));
+      if(inScrollEdge) return;
       if(!inTrack && !inAxis) return;
       const metrics=getLineTrackMetrics();
       if(!metrics) return;
@@ -5736,6 +5842,17 @@
       }
     }
 
+
+    [lineChartScrollEdgeLeft,lineChartScrollEdgeRight].forEach(edge=>{
+      if(!edge) return;
+      edge.addEventListener('pointerdown',event=>{
+        event.stopPropagation();
+      });
+      edge.addEventListener('touchmove',event=>{
+        event.stopPropagation();
+      },{passive:true});
+    });
+
     if(lineChartShell){
       lineChartShell.addEventListener('pointerdown',handleLinePointerDown);
       lineChartShell.addEventListener('pointermove',handleLinePointerMove);
@@ -5767,13 +5884,19 @@
     });
 
     // First paint
-    document.addEventListener('DOMContentLoaded',()=>{
+    document.addEventListener('DOMContentLoaded',async ()=>{
       if(hiddenInput){ hiddenInput.value=''; }
       if(btnUpload){ btnUpload.textContent='Upload CSV'; }
       addUploadLog('Ready to upload CSV or PDF files.','info');
       const layout=getLayoutSettings();
       applyLayoutToDocument(layout);
       currentLayout=layout;
+      await fetchDeviceAppearancePreferences();
+      const sectionToggles=document.querySelectorAll('.control-section');
+      const weekSection=sectionToggles[0];
+      const colleagueSection=sectionToggles[1];
+      if(weekSection) weekSection.open=true;
+      if(colleagueSection) colleagueSection.open=false;
       updateWeekSelectionUI();
       renderViews();
       switchView('schedule');

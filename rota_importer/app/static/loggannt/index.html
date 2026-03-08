@@ -58,6 +58,13 @@
     .side-panel{display:flex;flex-direction:column;gap:20px}
     .main-panel{display:flex;flex-direction:column;gap:24px}
     .controls{display:flex;flex-direction:column;gap:16px;align-items:stretch;border:1px solid rgba(6,28,46,.08);padding:26px 28px;border-radius:28px;background:var(--surface);box-shadow:0 20px 45px rgba(5,22,38,.1);width:100%}
+    .control-section{border:1px solid var(--border);border-radius:18px;background:var(--surface-soft);padding:14px 16px;display:flex;flex-direction:column;gap:12px}
+    .control-section summary{cursor:pointer;list-style:none;display:flex;align-items:center;justify-content:space-between;font-weight:700;color:var(--ink)}
+    .control-section summary::-webkit-details-marker{display:none}
+    .control-section summary::after{content:'▾';font-size:12px;color:var(--muted);transition:transform .2s ease}
+    .control-section[open] summary::after{transform:rotate(180deg)}
+    .control-section-body{display:flex;flex-direction:column;gap:12px}
+    .control-section-static-title{font-weight:700;color:var(--ink)}
     .control-btn{width:100%}
     .control-hint{margin:0;font-size:12px;color:var(--muted);background:var(--surface-soft);padding:12px 14px;border-radius:12px}
     .settings-toggle{position:fixed;top:20px;left:20px;width:48px;height:48px;border-radius:50%;border:1px solid var(--border);background:var(--surface);color:var(--accent);display:flex;align-items:center;justify-content:center;font-size:22px;cursor:pointer;box-shadow:0 14px 30px rgba(9,42,58,.12);transition:transform .2s ease,box-shadow .2s ease,background .2s ease;color .2s ease;z-index:2000}
@@ -68,9 +75,12 @@
     .settings-panel{position:fixed;top:84px;left:20px;width:420px;max-width:calc(100% - 40px);z-index:1990;max-height:calc(100vh - 104px);overflow-y:auto;overscroll-behavior:contain}
     .settings-panel .panel-title{margin-bottom:4px}
     .settings-panel .control-hint{background:transparent;padding:0;margin-bottom:8px}
-    .saved-week-select{display:flex;flex-direction:column;gap:6px}
-    .saved-week-select select{padding:10px 12px;border:1px solid var(--border);border-radius:12px;background:#fff;font:14px/1.5 "Averta Std","Nunito Sans","Helvetica Neue",Helvetica,Arial,sans-serif;color:var(--ink);box-shadow:0 6px 12px rgba(9,42,58,.06)}
-    .saved-week-select select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(0,123,195,.18)}
+    .saved-week-select{display:flex;flex-direction:column;gap:8px}
+    .saved-week-pills{display:flex;flex-wrap:wrap;gap:8px}
+    .saved-week-pill{appearance:none;border:1px solid var(--border);background:var(--surface-soft);color:var(--muted);border-radius:999px;padding:8px 12px;font-size:13px;font-weight:700;cursor:pointer;transition:all .2s ease}
+    .saved-week-pill:hover{background:var(--accent-soft);color:var(--accent);border-color:var(--accent)}
+    .saved-week-pill.active{background:var(--accent);border-color:var(--accent);color:#fff;box-shadow:0 10px 20px rgba(0,123,195,.18)}
+    .saved-week-pill:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
     .saved-week-meta{font-size:12px;color:var(--muted);margin:0}
     .saved-week-actions{display:flex;flex-wrap:wrap;gap:8px}
     .saved-week-actions .btn{flex:1 1 auto}
@@ -368,12 +378,6 @@
     <div id="appearanceControls" class="appearance-controls" hidden aria-hidden="true" role="group"></div>
   </div>
   <div class="wrap">
-    <header class="page-header">
-      <div>
-        <h1>CSV Rota Viewer</h1>
-        <p>Load an exported rota CSV (or the Logile PDF table export) to review weekly coverage, timelines, and printable PDFs—all processed locally in your browser. Start by uploading your latest file with the controls on the left.</p>
-      </div>
-    </header>
 
     <div class="mobile-hint" id="mobileHint" aria-live="polite">
       <div class="mobile-hint-text">
@@ -386,33 +390,46 @@
     <div class="layout">
       <aside class="side-panel">
         <div class="controls">
-          <label class="saved-week-select" for="savedWeekSelect">
-            <span>Viewing week(s)</span>
-            <select id="savedWeekSelect" multiple disabled></select>
-          </label>
-          <p class="saved-week-meta" id="savedWeekMeta" hidden></p>
-          <label class="ctrl" for="selIndividual" id="reportScopeControl" hidden aria-hidden="true">
-            <span>Report scope</span>
-            <select id="selIndividual" multiple disabled aria-describedby="reportScopeHint" hidden>
-              <option value="all">All colleagues</option>
-            </select>
-            <div class="report-scope-pills" id="reportScopePills" role="group" aria-label="Report scope colleagues"></div>
-          </label>
-      <div class="selection-actions" id="selectionActions" hidden aria-hidden="true">
-        <button class="btn btn-secondary" id="btnAllColleagues" type="button">All colleagues</button>
-        <button class="btn btn-secondary" id="btnManagementShortcut" type="button">Management</button>
-        <button class="btn btn-secondary" id="btnClearSelection" type="button">Clear selection</button>
-      </div>
-      <p class="control-hint" id="reportScopeHint" hidden aria-hidden="true">Select one or more colleagues to focus every preview and export.</p>
-    </div>
-    </aside>
+          <details class="control-section" open>
+            <summary>Week Selection</summary>
+            <div class="control-section-body">
+              <label class="saved-week-select" for="savedWeekPills" id="weekSelectorControl">
+                <span>Viewing week</span>
+                <div class="saved-week-pills" id="savedWeekPills" role="group" aria-label="Select week" aria-disabled="true"></div>
+              </label>
+              <p class="saved-week-meta" id="savedWeekMeta" hidden></p>
+            </div>
+          </details>
+          <details class="control-section" open>
+            <summary>Colleague Selection</summary>
+            <div class="control-section-body">
+              <label class="ctrl" for="selIndividual" id="reportScopeControl" hidden aria-hidden="true">
+                <span>Report scope</span>
+                <select id="selIndividual" multiple disabled aria-describedby="reportScopeHint" hidden>
+                  <option value="all">All colleagues</option>
+                </select>
+                <div class="report-scope-pills" id="reportScopePills" role="group" aria-label="Report scope colleagues"></div>
+              </label>
+              <div class="selection-actions" id="selectionActions" hidden aria-hidden="true">
+                <button class="btn btn-secondary" id="btnAllColleagues" type="button">All colleagues</button>
+                <button class="btn btn-secondary" id="btnManagementShortcut" type="button">Management</button>
+                <button class="btn btn-secondary" id="btnClearSelection" type="button">Clear selection</button>
+              </div>
+              <p class="control-hint" id="reportScopeHint" hidden aria-hidden="true">Select one or more colleagues to focus every preview and export.</p>
+            </div>
+          </details>
+          <section class="control-section">
+            <div class="control-section-static-title">View Type</div>
+            <div class="viewer-tabs" role="tablist" aria-label="Preview modes" hidden aria-hidden="true">
+              <button class="viewer-tab active" id="tabSchedule" type="button" role="tab" aria-selected="true" aria-controls="viewSchedule" data-view="schedule">Schedule view</button>
+              <button class="viewer-tab" id="tabLine" type="button" role="tab" aria-selected="false" aria-controls="viewLine" data-view="line">Line view</button>
+              <button class="viewer-tab" id="tabPdf" type="button" role="tab" aria-selected="false" aria-controls="viewPdf" data-view="pdf">PDF preview</button>
+            </div>
+          </section>
+        </div>
+      </aside>
       <main class="main-panel">
         <div class="viewer" id="viewerContainer" hidden aria-hidden="true">
-          <div class="viewer-tabs" role="tablist" aria-label="Preview modes" hidden aria-hidden="true">
-            <button class="viewer-tab active" id="tabSchedule" type="button" role="tab" aria-selected="true" aria-controls="viewSchedule" data-view="schedule">Schedule view</button>
-            <button class="viewer-tab" id="tabLine" type="button" role="tab" aria-selected="false" aria-controls="viewLine" data-view="line">Line view</button>
-            <button class="viewer-tab" id="tabPdf" type="button" role="tab" aria-selected="false" aria-controls="viewPdf" data-view="pdf">PDF preview</button>
-          </div>
           <section id="viewSchedule" class="view-panel active" role="tabpanel" aria-labelledby="tabSchedule">
             <div id="scheduleView" class="schedule-view"></div>
           </section>
@@ -454,6 +471,7 @@
       </main>
     </div>
     <textarea id="input" hidden></textarea>
+    <select id="savedWeekSelect" hidden disabled></select>
   </div>
 
   <script type="module">
@@ -2002,31 +2020,22 @@
     }
 
     function getActiveWeekData(){
-      return viewerWeekIds.map(id=>cachedWeeks.get(id)).filter(Boolean);
+      const activeId=viewerWeekIds[0];
+      const week=activeId?cachedWeeks.get(activeId):null;
+      return week?[week]:[];
     }
 
     function setActiveWeeks(ids,{persist=true}={}){
-      const unique=[];
-      ids.forEach(id=>{
-        if(typeof id!=='string') return;
-        if(!cachedWeeks.has(id)) return;
-        if(!unique.includes(id)) unique.push(id);
-      });
-      activeWeekIds=unique;
+      const nextId=Array.isArray(ids)?ids.find(id=>typeof id==='string' && cachedWeeks.has(id)):null;
+      activeWeekIds=nextId?[nextId]:[];
       if(persist) persistActiveSelection(activeWeekIds);
       constrainViewerWeeks({persist});
     }
 
     function setViewerWeeks(ids,{persist=true}={}){
       const allowed=new Set(activeWeekIds);
-      const unique=[];
-      ids.forEach(id=>{
-        if(typeof id!=='string') return;
-        if(!cachedWeeks.has(id)) return;
-        if(activeWeekIds.length && !allowed.has(id)) return;
-        if(!unique.includes(id)) unique.push(id);
-      });
-      viewerWeekIds=unique;
+      const nextId=Array.isArray(ids)?ids.find(id=>typeof id==='string' && cachedWeeks.has(id) && (!activeWeekIds.length || allowed.has(id))):null;
+      viewerWeekIds=nextId?[nextId]:[];
       if(persist) persistViewerSelection(viewerWeekIds);
     }
 
@@ -2055,13 +2064,8 @@
         return;
       }
       const allowed=new Set(activeWeekIds);
-      const valid=viewerWeekIds.filter(id=>cachedWeeks.has(id) && allowed.has(id));
-      if(valid.length){
-        viewerWeekIds=valid;
-        if(persist) persistViewerSelection(viewerWeekIds);
-        return;
-      }
-      viewerWeekIds=[activeWeekIds[0]];
+      const valid=viewerWeekIds.find(id=>cachedWeeks.has(id) && allowed.has(id));
+      viewerWeekIds=valid?[valid]:[activeWeekIds[0]];
       if(persist) persistViewerSelection(viewerWeekIds);
     }
 
@@ -2074,9 +2078,9 @@
         persistViewerSelection(viewerWeekIds);
         return;
       }
-      const valid=activeWeekIds.filter(id=>cachedWeeks.has(id));
-      if(valid.length){
-        activeWeekIds=valid;
+      const valid=activeWeekIds.find(id=>cachedWeeks.has(id));
+      if(valid){
+        activeWeekIds=[valid];
       }else{
         const todayIso=formatIsoLocalDate(new Date());
         const preferred=available.find(record=>recordCoversIsoDate(record,todayIso));
@@ -2125,6 +2129,7 @@
 
     function updateWeekSelectionUI(){
       const select=document.getElementById('savedWeekSelect');
+      const weekPills=document.getElementById('savedWeekPills');
       const meta=document.getElementById('savedWeekMeta');
       const settingsMeta=document.getElementById('settingsWeekMeta');
       const settingsWeekList=document.getElementById('settingsWeekList');
@@ -2134,21 +2139,38 @@
       if(hasRecords && !activeWeekIds.length){
         setActiveWeeks([records[0].id],{persist:true});
       }
+      const availableForViewer=records.filter(record=>activeSet.has(record.id));
       if(select){
         select.innerHTML='';
-        const availableForViewer=records.filter(record=>activeSet.has(record.id));
         if(availableForViewer.length){
           availableForViewer.forEach(record=>{
             const option=document.createElement('option');
             option.value=record.id;
             option.textContent=record.metadata && record.metadata.label?record.metadata.label:'Saved rota';
-            option.selected=viewerWeekIds.includes(record.id);
+            option.selected=viewerWeekIds[0]===record.id;
             select.appendChild(option);
           });
           select.disabled=false;
         }else{
           select.disabled=true;
           select.value='';
+        }
+      }
+      if(weekPills){
+        weekPills.innerHTML='';
+        if(availableForViewer.length){
+          availableForViewer.forEach(record=>{
+            const pill=document.createElement('button');
+            pill.type='button';
+            pill.className=`saved-week-pill${viewerWeekIds[0]===record.id?' active':''}`;
+            pill.dataset.weekId=record.id;
+            pill.setAttribute('aria-pressed',viewerWeekIds[0]===record.id?'true':'false');
+            pill.textContent=record.metadata && record.metadata.label?record.metadata.label:'Saved rota';
+            weekPills.appendChild(pill);
+          });
+          weekPills.setAttribute('aria-disabled','false');
+        }else{
+          weekPills.setAttribute('aria-disabled','true');
         }
       }
       const metaRecords=records.filter(item=>viewerWeekIds.includes(item.id));
@@ -2178,19 +2200,14 @@
             main.className='settings-week-item-main';
 
             const radio=document.createElement('input');
-            radio.type='checkbox';
+            radio.type='radio';
             radio.name='settingsAllowedWeek';
             radio.value=record.id;
             radio.checked=activeSet.has(record.id);
             radio.addEventListener('change',()=>{
-              const next=activeWeekIds.slice();
-              if(radio.checked){
-                if(!next.includes(record.id)) next.push(record.id);
-              }else{
-                const idx=next.indexOf(record.id);
-                if(idx>=0) next.splice(idx,1);
-              }
-              setActiveWeeks(next,{persist:true});
+              if(!radio.checked) return;
+              setActiveWeeks([record.id],{persist:true});
+              setViewerWeeks([record.id],{persist:true});
               updateWeekSelectionUI();
               renderViews();
             });
@@ -4127,9 +4144,7 @@
         savedWeekRecords.push(record);
       }
       rebuildWeekCache();
-      const nextAllowed=activeWeekIds.slice();
-      if(!nextAllowed.includes(record.id)) nextAllowed.push(record.id);
-      setActiveWeeks(nextAllowed,{persist:true});
+      setActiveWeeks([record.id],{persist:true});
       setViewerWeeks([record.id],{persist:true});
       ensureActiveWeeks();
       updateWeekSelectionUI();
@@ -5214,8 +5229,21 @@
     const savedWeekSelect=document.getElementById('savedWeekSelect');
     if(savedWeekSelect){
       savedWeekSelect.addEventListener('change',()=>{
-        const selectedIds=Array.from(savedWeekSelect.selectedOptions||[]).map(option=>option.value).filter(Boolean);
-        setViewerWeeks(selectedIds,{persist:true});
+        const selectedId=savedWeekSelect.value||'';
+        setViewerWeeks(selectedId?[selectedId]:[],{persist:true});
+        updateWeekSelectionUI();
+        renderViews();
+      });
+    }
+
+    const savedWeekPills=document.getElementById('savedWeekPills');
+    if(savedWeekPills){
+      savedWeekPills.addEventListener('click',event=>{
+        const pill=event.target instanceof Element?event.target.closest('button[data-week-id]'):null;
+        if(!pill) return;
+        const weekId=pill.getAttribute('data-week-id')||'';
+        if(!weekId) return;
+        setViewerWeeks([weekId],{persist:true});
         updateWeekSelectionUI();
         renderViews();
       });

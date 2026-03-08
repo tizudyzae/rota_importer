@@ -25,6 +25,77 @@ Because `addon_config:rw` is mapped, the add-on writes to `/config` inside the c
 - Uploaded PDFs: `/config/uploads/`
 - Exported CSVs: `/config/exports/`
 
+## Use with Home Assistant automations (notifications)
+
+Yes — and now there is a dedicated shifts API for that use case.
+
+Use `GET /api/shifts` to query who is working on specific dates or date ranges.
+
+### Query endpoint for "who is working when"
+
+`/api/shifts` supports these query parameters:
+
+- `date_from` (`YYYY-MM-DD`) optional
+- `date_to` (`YYYY-MM-DD`) optional
+- `employee` optional exact-name filter (case-insensitive)
+- `working_only` (`true`/`false`) optional; when true, only rows with start/end times are returned
+- `limit` optional (1..500, default 300)
+
+Example:
+
+```text
+/api/shifts?date_from=2026-03-10&date_to=2026-03-10&working_only=true
+```
+
+Response includes:
+
+- `items`: flat row list from the DB (employee, shift_date, start/end, raw cell, upload metadata)
+- `by_date`: grouped workers per date with `worker_count`
+
+### Home Assistant example (REST sensor + notification)
+
+```yaml
+sensor:
+  - platform: rest
+    name: rota_workers_today
+    resource_template: >-
+      http://YOUR_ADDON_HOST:8099/api/shifts
+      ?date_from={{ now().strftime('%Y-%m-%d') }}
+      &date_to={{ now().strftime('%Y-%m-%d') }}
+      &working_only=true
+    method: GET
+    scan_interval: 300
+    value_template: "{{ value_json.count }}"
+    json_attributes:
+      - by_date
+```
+
+```yaml
+automation:
+  - alias: "Rota importer: notify who is working today"
+    mode: single
+    trigger:
+      - platform: time
+        at: "07:00:00"
+    action:
+      - service: notify.mobile_app_your_phone
+        data:
+          title: "Today's rota"
+          message: >-
+            {% set groups = state_attr('sensor.rota_workers_today', 'by_date') or [] %}
+            {% set today = (groups | first) if groups else None %}
+            {% if not today %}
+              No scheduled shifts found today.
+            {% else %}
+              {{ today.worker_count }} working today:
+              {% for person in today.workers %}
+                {{ person.employee }} ({{ person.start_time }}-{{ person.end_time }}){% if not loop.last %}, {% endif %}
+              {% endfor %}
+            {% endif %}
+```
+
+This is API-first (recommended), so automations do not need direct SQLite access.
+
 ## Important
 
 The parsing logic in `app/app.py` is intentionally generic. It will probably need tweaking for your exact rota PDF layout.

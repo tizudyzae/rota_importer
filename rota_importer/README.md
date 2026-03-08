@@ -87,6 +87,79 @@ You can also use:
 
 Use a second REST sensor or a `rest_command` and template the returned JSON into any `notify.*` service.
 
+## Extract specific rota data with the API
+
+If you want only *specific* rota data (for example one person, one day, or the latest upload), use the API in two steps:
+
+1. Call `/api/uploads` to find the upload ID you want.
+2. Call `/api/upload/<id>/model` and filter the JSON.
+
+### Step 1: Get the latest upload ID
+
+```bash
+curl -s http://YOUR_ADDON_HOST:8099/api/uploads | jq '.[0].id'
+```
+
+`/api/uploads` returns objects like:
+
+```json
+[
+  {
+    "id": 42,
+    "original_filename": "rota_week_14.pdf",
+    "uploaded_at": "2026-03-07T18:22:11",
+    "row_count": 35
+  }
+]
+```
+
+### Step 2: Query one upload model
+
+```bash
+curl -s http://YOUR_ADDON_HOST:8099/api/upload/42/model | jq
+```
+
+Important fields in this payload:
+
+- `model.dayHeaders`: day labels in order (`sun`, `mon`, `tue`, `wed`, `thu`, `fri`, `sat`).
+- `model.rows[]`: one object per employee.
+- `model.rows[].days[]`: shift cells aligned to the same day order as `dayHeaders`.
+
+### Practical `jq` examples
+
+Get all shift cells for a single employee:
+
+```bash
+curl -s http://YOUR_ADDON_HOST:8099/api/upload/42/model \
+  | jq '.model.rows[] | select(.name == "Jane Smith") | .days'
+```
+
+Get just one day for a person (Monday = index `1`, because order starts at Sunday index `0`):
+
+```bash
+curl -s http://YOUR_ADDON_HOST:8099/api/upload/42/model \
+  | jq '.model.rows[] | select(.name == "Jane Smith") | {name, monday: .days[1]}'
+```
+
+Build a compact list for notifications (`name` + `today` cell, example uses Wednesday index `3`):
+
+```bash
+curl -s http://YOUR_ADDON_HOST:8099/api/upload/42/model \
+  | jq '[.model.rows[] | {name, today: .days[3]}]'
+```
+
+### Home Assistant template example
+
+If you store `/api/upload/<id>/model` JSON in a REST sensor attribute, you can extract one person's day cell with Jinja:
+
+```jinja2
+{% set rows = state_attr('sensor.rota_upload_model', 'model').rows %}
+{% set jane = rows | selectattr('name', 'equalto', 'Jane Smith') | list | first %}
+{{ jane.days[1] if jane else 'No shift found' }}
+```
+
+This makes it easy to drive `notify.*` actions with only the rota detail you need.
+
 ## Important
 
 The parsing logic in `app/app.py` is intentionally generic. It will probably need tweaking for your exact rota PDF layout.

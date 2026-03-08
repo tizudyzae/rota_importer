@@ -389,6 +389,122 @@ def build_sync_payload() -> list[dict]:
     return [build_model_from_upload(row["id"]) for row in uploads]
 
 
+def is_iso_date(value: str) -> bool:
+    if not value:
+        return False
+    try:
+        datetime.strptime(value, "%Y-%m-%d")
+    except ValueError:
+        return False
+    return True
+
+
+def normalize_shift_filter(
+    date_from: str | None,
+    date_to: str | None,
+    employee: str | None,
+    working_only: bool,
+    limit: int,
+) -> tuple[str, str, str, bool, int]:
+    cleaned_from = (date_from or "").strip()
+    cleaned_to = (date_to or "").strip()
+    cleaned_employee = clean_cell(employee or "")[:120]
+    safe_limit = max(1, min(limit, 500))
+
+    if cleaned_from and not is_iso_date(cleaned_from):
+        raise HTTPException(status_code=400, detail="date_from must be YYYY-MM-DD")
+    if cleaned_to and not is_iso_date(cleaned_to):
+        raise HTTPException(status_code=400, detail="date_to must be YYYY-MM-DD")
+    if cleaned_from and cleaned_to and cleaned_from > cleaned_to:
+        raise HTTPException(status_code=400, detail="date_from cannot be after date_to")
+
+    return cleaned_from, cleaned_to, cleaned_employee, bool(working_only), safe_limit
+
+
+def fetch_shift_rows(
+    date_from: str,
+    date_to: str,
+    employee: str,
+    working_only: bool,
+    limit: int,
+) -> list[sqlite3.Row]:
+    clauses: list[str] = ["s.shift_date IS NOT NULL", "s.shift_date <> ''"]
+    params: list[str | int] = []
+
+    if date_from:
+        clauses.append("s.shift_date >= ?")
+        params.append(date_from)
+    if date_to:
+        clauses.append("s.shift_date <= ?")
+        params.append(date_to)
+    if employee:
+        clauses.append("LOWER(s.employee) = LOWER(?)")
+        params.append(employee)
+    if working_only:
+        clauses.append("s.start_time <> ''")
+        clauses.append("s.end_time <> ''")
+
+    where_sql = " AND ".join(clauses)
+
+    with get_conn() as conn:
+        return conn.execute(
+            f"""
+            SELECT
+                s.id,
+                s.upload_id,
+                s.employee,
+                s.day_name,
+                s.day_header,
+                s.shift_date,
+                s.raw_cell,
+                s.start_time,
+                s.end_time,
+                s.total_hours,
+                s.row_index,
+                u.original_filename,
+                u.uploaded_at
+            FROM shifts s
+            JOIN uploads u ON u.id = s.upload_id
+            WHERE {where_sql}
+            ORDER BY s.shift_date ASC, s.start_time ASC, s.employee ASC, s.id ASC
+            LIMIT ?
+            """,
+            [*params, limit],
+        ).fetchall()
+
+
+def shifts_by_date(rows: list[sqlite3.Row]) -> list[dict]:
+    grouped: dict[str, list[dict]] = {}
+
+    for row in rows:
+        shift_date = row["shift_date"] or ""
+        grouped.setdefault(shift_date, []).append(
+            {
+                "id": row["id"],
+                "upload_id": row["upload_id"],
+                "employee": row["employee"],
+                "day_name": row["day_name"],
+                "day_header": row["day_header"],
+                "start_time": row["start_time"],
+                "end_time": row["end_time"],
+                "raw_cell": row["raw_cell"],
+                "total_hours": row["total_hours"],
+                "row_index": row["row_index"],
+                "original_filename": row["original_filename"],
+                "uploaded_at": row["uploaded_at"],
+            }
+        )
+
+    return [
+        {
+            "date": shift_date,
+            "workers": workers,
+            "worker_count": len(workers),
+        }
+        for shift_date, workers in grouped.items()
+    ]
+
+
 def sanitize_preferences_payload(payload: dict | None) -> tuple[dict, dict]:
     payload = payload if isinstance(payload, dict) else {}
     colors_raw = payload.get("colors")
@@ -484,6 +600,45 @@ def api_upload_model(upload_id: int):
 @app.get("/api/viewer_sync")
 def api_viewer_sync():
     return JSONResponse(build_sync_payload())
+
+
+@app.get("/api/shifts")
+def api_shifts(
+    date_from: str | None = None,
+    date_to: str | None = None,
+    employee: str | None = None,
+    working_only: bool = False,
+    limit: int = 300,
+):
+    clean_from, clean_to, clean_employee, clean_working_only, clean_limit = normalize_shift_filter(
+        date_from=date_from,
+        date_to=date_to,
+        employee=employee,
+        working_only=working_only,
+        limit=limit,
+    )
+    rows = fetch_shift_rows(
+        date_from=clean_from,
+        date_to=clean_to,
+        employee=clean_employee,
+        working_only=clean_working_only,
+        limit=clean_limit,
+    )
+
+    return JSONResponse(
+        {
+            "filters": {
+                "date_from": clean_from,
+                "date_to": clean_to,
+                "employee": clean_employee,
+                "working_only": clean_working_only,
+                "limit": clean_limit,
+            },
+            "count": len(rows),
+            "items": [dict(row) for row in rows],
+            "by_date": shifts_by_date(rows),
+        }
+    )
 
 
 @app.get("/api/preferences/{device_id}")

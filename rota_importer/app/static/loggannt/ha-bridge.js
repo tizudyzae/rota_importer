@@ -63,6 +63,23 @@
     return changed;
   }
 
+
+  async function deleteUploadByViewerId(viewerId) {
+    const match = /^upload-(\d+)$/.exec((viewerId || "").trim());
+    if (!match) {
+      throw new Error("Invalid upload id");
+    }
+    const uploadId = match[1];
+    const resp = await fetch(apiUrl(`/api/upload/${uploadId}`), {
+      method: "DELETE",
+    });
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(text || `Delete failed: ${resp.status}`);
+    }
+    return resp.json();
+  }
+
   function hideLegacyPdfSection() {
     const testingHeading = qa("h2,h3,legend").find((el) =>
       (el.textContent || "").trim() === "Testing"
@@ -160,6 +177,38 @@
     });
   }
 
+
+  function wireDeleteButtons() {
+    document.addEventListener("click", async (event) => {
+      const target = event.target instanceof Element ? event.target : null;
+      const deleteButton = target ? target.closest(".settings-week-delete") : null;
+      if (!deleteButton) return;
+
+      const item = deleteButton.closest(".settings-week-item");
+      const checkbox = item ? item.querySelector('input[name="settingsAllowedWeek"]') : null;
+      const viewerId = checkbox ? checkbox.value : "";
+      if (!viewerId || !/^upload-\d+$/.test(viewerId)) return;
+
+      event.preventDefault();
+      event.stopImmediatePropagation();
+
+      const originalLabel = deleteButton.textContent;
+      deleteButton.disabled = true;
+      deleteButton.textContent = "Deleting...";
+
+      try {
+        await deleteUploadByViewerId(viewerId);
+        await syncViewerState();
+        window.location.reload();
+      } catch (err) {
+        console.error(err);
+        alert(`Delete failed: ${err.message}`);
+        deleteButton.disabled = false;
+        deleteButton.textContent = originalLabel;
+      }
+    }, true);
+  }
+
   async function initialSyncAndMaybeReload() {
     const alreadyReloaded = sessionStorage.getItem(RELOAD_FLAG) === "1";
 
@@ -182,6 +231,7 @@
     hideLegacyPdfSection();
     patchCopy();
     replaceUploadButton();
+    wireDeleteButtons();
   }
 
   if (document.readyState === "loading") {

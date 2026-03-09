@@ -356,6 +356,7 @@
       .page-header-cta{flex-direction:column}
       .controls{padding:22px;border-radius:24px}
       .pdf-toolbar{padding:18px;border-radius:20px}
+      .pdf-toolbar .btn{flex:1 1 100%}
       .schedule-day-card summary{padding:20px}
       .schedule-day-content{padding:0 20px 20px}
       .shift-card{flex-direction:column;align-items:flex-start}
@@ -481,9 +482,11 @@
   </div>
 
   <script type="module">
-    window.pdfjsLibReady = import('./pdf.min.mjs')
+    const appBase=(window.__APP_BASE__||'').replace(/\/$/,'');
+    const assetBase=`${appBase}/static/loggannt`;
+    window.pdfjsLibReady = import(`${assetBase}/pdf.min.mjs`)
       .then(pdfjsLib => {
-        pdfjsLib.GlobalWorkerOptions.workerSrc = './pdf.worker.min.mjs';
+        pdfjsLib.GlobalWorkerOptions.workerSrc = `${assetBase}/pdf.worker.min.mjs`;
         window.pdfjsLib = pdfjsLib;
         return pdfjsLib;
       })
@@ -493,7 +496,14 @@
         throw err;
       });
   </script>
-  <script src="pdf-lib.min.js"></script>
+  <script>
+    (function(){
+      const appBase=(window.__APP_BASE__||'').replace(/\/$/,'');
+      const script=document.createElement('script');
+      script.src=`${appBase}/static/loggannt/pdf-lib.min.js`;
+      document.head.appendChild(script);
+    })();
+  </script>
   <script>
     // ---------- Utilities ----------
     const pad2=n=>String(n).padStart(2,'0');
@@ -1271,7 +1281,8 @@
         scriptEl.addEventListener('load',onLoad,{once:true});
         scriptEl.addEventListener('error',onError,{once:true});
         if(!existing){
-          scriptEl.src=new URL('./pdf-lib.min.js',window.location.href).toString();
+          const appBase=(window.__APP_BASE__||'').replace(/\/$/,'');
+          scriptEl.src=`${appBase}/static/loggannt/pdf-lib.min.js`;
           document.head.appendChild(scriptEl);
         }
       }).catch(err=>{

@@ -831,11 +831,8 @@
 
     const APP_BASE=(window.__APP_BASE__||'').replace(/\/$/,'');
     const STORAGE_KEY='loggannt.rotas.v1';
-    const STORAGE_DEVICE_KEY='loggannt.rotas.deviceId';
     const STORAGE_SELECTION_KEY='loggannt.rotas.selection';
     const STORAGE_VIEWER_SELECTION_KEY='loggannt.rotas.viewerSelection';
-    const STORAGE_COLOR_KEY='loggannt.rotas.colors';
-    const STORAGE_ALIAS_KEY='loggannt.rotas.aliases';
     const STORAGE_HOME_TIP_KEY='loggannt.rotas.homeTipDismissed';
     const MAX_STORED_WEEKS=4;
 
@@ -844,20 +841,6 @@
       return `${APP_BASE}${path}`;
     }
 
-    function getDeviceId(){
-      if(typeof window==='undefined' || !window.localStorage) return 'browser-unknown';
-      try{
-        const existing=window.localStorage.getItem(STORAGE_DEVICE_KEY);
-        if(existing) return existing;
-        const created=(window.crypto && window.crypto.randomUUID)?window.crypto.randomUUID():`dev-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-        window.localStorage.setItem(STORAGE_DEVICE_KEY,created);
-        return created;
-      }catch(err){
-        return 'browser-unknown';
-      }
-    }
-
-    const deviceId=getDeviceId();
     let appearanceSyncTimer=null;
 
     function formatShortWeekLabel(record){
@@ -1735,78 +1718,7 @@
       ].join(';');
     }
 
-    function loadColorPreferences(){
-      try{
-        if(!storageSupported) return new Map();
-        const raw=window.localStorage.getItem(STORAGE_COLOR_KEY);
-        if(!raw) return new Map();
-        const parsed=JSON.parse(raw);
-        const map=new Map();
-        if(parsed && typeof parsed==='object'){
-          Object.entries(parsed).forEach(([key,val])=>{
-            const normalized=normalizeColorHex(val);
-            if(key && normalized){
-              map.set(key,normalized);
-            }
-          });
-        }
-        return map;
-      }catch(err){
-        console.warn('Failed to read colour preferences:',err);
-        return new Map();
-      }
-    }
-
-    function persistColorPreferences(){
-      if(!storageSupported) return;
-      try{
-        const payload={};
-        colorPreferenceMap.forEach((value,key)=>{
-          payload[key]=value;
-        });
-        window.localStorage.setItem(STORAGE_COLOR_KEY,JSON.stringify(payload));
-        scheduleServerAppearanceSync();
-      }catch(err){
-        console.warn('Failed to store colour preferences:',err);
-      }
-    }
-
-    
-
-    function loadAliasPreferences(){
-      try{
-        if(!storageSupported) return new Map();
-        const raw=window.localStorage.getItem(STORAGE_ALIAS_KEY);
-        if(!raw) return new Map();
-        const parsed=JSON.parse(raw);
-        const map=new Map();
-        if(parsed && typeof parsed==='object'){
-          Object.entries(parsed).forEach(([key,val])=>{
-            if(!key || typeof val!=='string') return;
-            const trimmed=val.trim();
-            if(trimmed) map.set(key,trimmed);
-          });
-        }
-        return map;
-      }catch(err){
-        console.warn('Failed to read alias preferences:',err);
-        return new Map();
-      }
-    }
-
-    function persistAliasPreferences(){
-      if(!storageSupported) return;
-      try{
-        const payload={};
-        aliasPreferenceMap.forEach((value,key)=>{ payload[key]=value; });
-        window.localStorage.setItem(STORAGE_ALIAS_KEY,JSON.stringify(payload));
-        scheduleServerAppearanceSync();
-      }catch(err){
-        console.warn('Failed to store alias preferences:',err);
-      }
-    }
-
-    const aliasPreferenceMap=loadAliasPreferences();
+    const aliasPreferenceMap=new Map();
 
     function getAliasPreferenceByKey(key){
       if(!key) return null;
@@ -1822,7 +1734,7 @@
       return null;
     }
 
-    const colorPreferenceMap=loadColorPreferences();
+    const colorPreferenceMap=new Map();
 
     function getColorPreferenceByKey(key){
       if(!key) return null;
@@ -1913,10 +1825,19 @@
     }
 
 
+
+    function persistColorPreferences(){
+      scheduleServerAppearanceSync();
+    }
+
+    function persistAliasPreferences(){
+      scheduleServerAppearanceSync();
+    }
+
     async function fetchDeviceAppearancePreferences(){
       if(!APP_BASE) return;
       try{
-        const resp=await fetch(apiUrl(`/api/preferences/${encodeURIComponent(deviceId)}`),{cache:'no-store'});
+        const resp=await fetch(apiUrl('/api/preferences'),{cache:'no-store'});
         if(!resp.ok) return;
         const payload=await resp.json();
         colorPreferenceMap.clear();
@@ -1951,7 +1872,7 @@
           colorPreferenceMap.forEach((value,key)=>{ colors[key]=value; });
           const aliases={};
           aliasPreferenceMap.forEach((value,key)=>{ aliases[key]=value; });
-          await fetch(apiUrl(`/api/preferences/${encodeURIComponent(deviceId)}`),{
+          await fetch(apiUrl('/api/preferences'),{
             method:'PUT',
             headers:{'Content-Type':'application/json'},
             body:JSON.stringify({colors,aliases})
@@ -3721,8 +3642,8 @@
         return;
       }
       const dateOrder=(week.metadata && week.metadata.dateOrder)||inferDateOrder(dayHeaders,model);
-      const formattedDates=dayHeaders.map(label=>formatFullDayLabel(label,dateOrder));
       const dateRangeLabel=resolveDateRangeLabelForWeek(model,week.metadata,layout);
+      const formattedDates=dayHeaders.map(label=>formatFullDayLabel(label,dateOrder));
       const parsedHeaders=dayHeaders.map(label=>parseDayHeader(label,dateOrder));
       const fallbackYear=(()=>{
         const withYear=parsedHeaders.find(info=>info && Number.isInteger(info.year));
@@ -3731,13 +3652,6 @@
         if(Number.isInteger(rangeYear)) return rangeYear;
         return null;
       })();
-      const header=document.createElement('div');
-      header.className='schedule-header';
-      const range=document.createElement('div');
-      range.className='schedule-range';
-      range.textContent=dateRangeLabel || 'Date range unavailable';
-      header.appendChild(range);
-      container.appendChild(header);
 
       const lookup=buildDisplayNameLookup(model);
       const selectionRecords=allowIndividual?getSelectionRecords(model):[];
@@ -3922,7 +3836,7 @@
       weeks.forEach(week=>{
         const section=document.createElement('section');
         section.className='schedule-week';
-        renderWeekSchedule(section,week,{allowIndividual:true,showHeading:true});
+        renderWeekSchedule(section,week,{allowIndividual:true,showHeading:false});
         container.appendChild(section);
       });
     }
@@ -3948,7 +3862,6 @@
       }
       const dateOrder=(week.metadata && week.metadata.dateOrder)||inferDateOrder(dayHeaders,model);
         const formattedDates=dayHeaders.map(label=>formatFullDayLabel(label,dateOrder));
-      const dateRangeLabel=resolveDateRangeLabelForWeek(model,week.metadata,layout);
       const lookup=buildDisplayNameLookup(model);
       const selectionRecords=allowIndividual?getSelectionRecords(model):[];
       const selectedRows=selectionRecords.map(item=>item.row);
@@ -4134,7 +4047,7 @@
       if(btnManagementShortcut){
         const normalizedTargets=MANAGEMENT_SHORTCUT_NAMES;
         const hasShortcut=rows.length>0 && lastIndividuals.some(rec=>{
-          const value=(rec.displayName||rec.rawName||rec.name||'').toLowerCase();
+          const value=`${rec.rawName||''} ${rec.name||''}`.toLowerCase();
           return normalizedTargets.some(name=>value.includes(name));
         });
         btnManagementShortcut.disabled=!hasShortcut;
@@ -4328,8 +4241,7 @@
           const filteredPerDay=selectedRows.length?filterPerDayEntries(perDay,selectedRows):perDay;
           const dateOrder=(week.metadata && week.metadata.dateOrder)||inferDateOrder(dayHeaders,model);
           const formattedDates=dayHeaders.map(label=>formatFullDayLabel(label,dateOrder));
-          const dateRangeLabel=resolveDateRangeLabelForWeek(model,week.metadata,layout);
-          const renderDaySheet=(rows,label,formattedDate)=>{
+              const renderDaySheet=(rows,label,formattedDate)=>{
             const footerText=formatFooterText(layout.footerTemplate,{
               pageNumber,
               totalPages,
@@ -4401,7 +4313,6 @@
       const perDay=Array.isArray(week.perDay)?week.perDay:[];
       const layout=currentLayout || DEFAULT_LAYOUT;
       const palette=buildPdfPalette(layout);
-      const dateRangeLabel=resolveDateRangeLabelForWeek(model,week.metadata,layout);
       const dayHeaders=Array.isArray(model.dayHeaders)?model.dayHeaders:[];
       const dateOrder=(week.metadata && week.metadata.dateOrder)||inferDateOrder(dayHeaders,model);
       const dayRows=[];
@@ -5456,7 +5367,7 @@
           return;
         }
         const matches=lastIndividuals.filter(rec=>{
-          const value=(rec.displayName||rec.rawName||rec.name||'').toLowerCase();
+          const value=`${rec.rawName||''} ${rec.name||''}`.toLowerCase();
           return MANAGEMENT_SHORTCUT_NAMES.some(name=>value.includes(name));
         }).map(rec=>rec.index);
         setCurrentIndividualSelection(matches);

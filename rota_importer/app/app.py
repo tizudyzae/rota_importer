@@ -74,6 +74,16 @@ def init_db() -> None:
         )
         conn.execute(
             """
+            CREATE TABLE IF NOT EXISTS app_preferences (
+                singleton_key TEXT PRIMARY KEY,
+                color_preferences TEXT NOT NULL,
+                alias_preferences TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            """
             CREATE TABLE IF NOT EXISTS device_preferences (
                 device_id TEXT PRIMARY KEY,
                 color_preferences TEXT NOT NULL,
@@ -82,6 +92,30 @@ def init_db() -> None:
             )
             """
         )
+        existing_global = conn.execute(
+            "SELECT singleton_key FROM app_preferences WHERE singleton_key = 'global'"
+        ).fetchone()
+        if not existing_global:
+            latest_device = conn.execute(
+                """
+                SELECT color_preferences, alias_preferences, updated_at
+                FROM device_preferences
+                ORDER BY updated_at DESC
+                LIMIT 1
+                """
+            ).fetchone()
+            if latest_device:
+                conn.execute(
+                    """
+                    INSERT INTO app_preferences (singleton_key, color_preferences, alias_preferences, updated_at)
+                    VALUES ('global', ?, ?, ?)
+                    """,
+                    (
+                        latest_device["color_preferences"] or "{}",
+                        latest_device["alias_preferences"] or "{}",
+                        latest_device["updated_at"] or datetime.utcnow().isoformat(timespec="seconds"),
+                    ),
+                )
         conn.commit()
 
 
@@ -498,20 +532,15 @@ def api_viewer_sync():
     return JSONResponse(build_sync_payload())
 
 
-@app.get("/api/preferences/{device_id}")
-def api_get_preferences(device_id: str):
-    clean_device_id = re.sub(r"[^a-zA-Z0-9._-]", "", device_id or "")[:80]
-    if not clean_device_id:
-        raise HTTPException(status_code=400, detail="Invalid device id")
-
+@app.get("/api/preferences")
+def api_get_preferences():
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT color_preferences, alias_preferences FROM device_preferences WHERE device_id = ?",
-            (clean_device_id,),
+            "SELECT color_preferences, alias_preferences FROM app_preferences WHERE singleton_key = 'global'",
         ).fetchone()
 
     if not row:
-        return JSONResponse({"device_id": clean_device_id, "colors": {}, "aliases": {}})
+        return JSONResponse({"colors": {}, "aliases": {}})
 
     try:
         colors = json.loads(row["color_preferences"] or "{}")
@@ -524,19 +553,14 @@ def api_get_preferences(device_id: str):
 
     return JSONResponse(
         {
-            "device_id": clean_device_id,
             "colors": colors if isinstance(colors, dict) else {},
             "aliases": aliases if isinstance(aliases, dict) else {},
         }
     )
 
 
-@app.put("/api/preferences/{device_id}")
-async def api_put_preferences(device_id: str, request: Request):
-    clean_device_id = re.sub(r"[^a-zA-Z0-9._-]", "", device_id or "")[:80]
-    if not clean_device_id:
-        raise HTTPException(status_code=400, detail="Invalid device id")
-
+@app.put("/api/preferences")
+async def api_put_preferences(request: Request):
     try:
         body = await request.json()
     except Exception as exc:
@@ -548,19 +572,29 @@ async def api_put_preferences(device_id: str, request: Request):
     with get_conn() as conn:
         conn.execute(
             """
-            INSERT INTO device_preferences (device_id, color_preferences, alias_preferences, updated_at)
-            VALUES (?, ?, ?, ?)
-            ON CONFLICT(device_id) DO UPDATE SET
+            INSERT INTO app_preferences (singleton_key, color_preferences, alias_preferences, updated_at)
+            VALUES ('global', ?, ?, ?)
+            ON CONFLICT(singleton_key) DO UPDATE SET
               color_preferences=excluded.color_preferences,
               alias_preferences=excluded.alias_preferences,
               updated_at=excluded.updated_at
             """,
-            (clean_device_id, json.dumps(colors), json.dumps(aliases), now),
+            (json.dumps(colors), json.dumps(aliases), now),
         )
         conn.commit()
 
 
-    return JSONResponse({"ok": True, "device_id": clean_device_id})
+    return JSONResponse({"ok": True})
+
+
+@app.get("/api/preferences/{device_id}")
+def api_get_preferences_legacy(device_id: str):
+    return api_get_preferences()
+
+
+@app.put("/api/preferences/{device_id}")
+async def api_put_preferences_legacy(device_id: str, request: Request):
+    return await api_put_preferences(request)
 
 
 @app.post("/api/upload_pdf")

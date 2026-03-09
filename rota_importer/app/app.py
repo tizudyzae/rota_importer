@@ -87,6 +87,8 @@ def init_db() -> None:
 
 @app.on_event("startup")
 def startup() -> None:
+    print(f"Using DB path: {DB_PATH}")
+    print(f"DB parent exists: {DB_PATH.parent.exists()}")
     init_db()
    
 

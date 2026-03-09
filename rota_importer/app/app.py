@@ -21,6 +21,7 @@ CONFIG_DIR = Path("/config")
 UPLOAD_DIR = CONFIG_DIR / "uploads"
 EXPORT_DIR = CONFIG_DIR / "exports"
 DB_PATH = Path(os.environ.get("ROTA_DB_PATH", "/config/rota.db"))
+HA_DB_EXPORT_PATH = Path("/homeassistant/rota.db")
 
 app = FastAPI(title="Rota PDF Importer")
 
@@ -34,6 +35,21 @@ def get_conn() -> sqlite3.Connection:
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def export_db_to_homeassistant() -> None:
+    if not HA_DB_EXPORT_PATH.parent.exists():
+        return
+
+    src = sqlite3.connect(DB_PATH)
+    dst = sqlite3.connect(HA_DB_EXPORT_PATH)
+
+    try:
+        with dst:
+            src.backup(dst)
+    finally:
+        dst.close()
+        src.close()
 
 
 def init_db() -> None:
@@ -85,6 +101,7 @@ def init_db() -> None:
 @app.on_event("startup")
 def startup() -> None:
     init_db()
+    export_db_to_homeassistant()
 
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -114,17 +131,17 @@ def parse_headers(header_row: List[str]) -> dict:
             month = match.group(2)
             day = match.group(3)
             headers[idx] = {
-            "day_key": match.group(1).lower(),
-            "full_header": cell,
-            "day": day,
-            "month": month,
+                "day_key": match.group(1).lower(),
+                "full_header": cell,
+                "day": day,
+                "month": month,
             }
         else:
             headers[idx] = {
-            "day_key": cell.lower(),
-            "full_header": cell,
-            "month": "",
-            "day": "",
+                "day_key": cell.lower(),
+                "full_header": cell,
+                "month": "",
+                "day": "",
             }
     return headers
 
@@ -547,6 +564,8 @@ async def api_put_preferences(device_id: str, request: Request):
         )
         conn.commit()
 
+    export_db_to_homeassistant()
+
     return JSONResponse({"ok": True, "device_id": clean_device_id})
 
 
@@ -597,6 +616,8 @@ async def api_upload_pdf(file: UploadFile = File(...)):
                 ),
             )
         conn.commit()
+
+    export_db_to_homeassistant()
 
     return JSONResponse(
         {

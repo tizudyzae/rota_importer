@@ -426,8 +426,8 @@
           <section class="control-section">
             <div class="control-section-static-title">View Type</div>
             <div class="viewer-tabs" role="tablist" aria-label="Preview modes" hidden aria-hidden="true">
-              <button class="viewer-tab active" id="tabSchedule" type="button" role="tab" aria-selected="true" aria-controls="viewSchedule" data-view="schedule">Schedule view</button>
-              <button class="viewer-tab" id="tabLine" type="button" role="tab" aria-selected="false" aria-controls="viewLine" data-view="line">Line view</button>
+              <button class="viewer-tab" id="tabSchedule" type="button" role="tab" aria-selected="false" aria-controls="viewSchedule" data-view="schedule">Schedule view</button>
+              <button class="viewer-tab active" id="tabLine" type="button" role="tab" aria-selected="true" aria-controls="viewLine" data-view="line">Line view</button>
               <button class="viewer-tab" id="tabPdf" type="button" role="tab" aria-selected="false" aria-controls="viewPdf" data-view="pdf">PDF preview</button>
             </div>
           </section>
@@ -435,10 +435,10 @@
       </aside>
       <main class="main-panel">
         <div class="viewer" id="viewerContainer" hidden aria-hidden="true">
-          <section id="viewSchedule" class="view-panel active" role="tabpanel" aria-labelledby="tabSchedule">
+          <section id="viewSchedule" class="view-panel" role="tabpanel" aria-labelledby="tabSchedule">
             <div id="scheduleView" class="schedule-view"></div>
           </section>
-          <section id="viewLine" class="view-panel" role="tabpanel" aria-labelledby="tabLine">
+          <section id="viewLine" class="view-panel active" role="tabpanel" aria-labelledby="tabLine">
             <div id="lineView" class="line-view">
               <div class="line-week-individual" id="lineIndividualWeek" hidden aria-hidden="true"></div>
               <div class="line-presets" id="linePresetButtons" hidden aria-hidden="true">
@@ -2278,7 +2278,20 @@
       syncSettingsPanel();
     }
 
-    function removeWeekRecord(id){
+    async function removeWeekRecord(id){
+      if(typeof id!=='string' || !/^upload-\d+$/.test(id)) return;
+      const uploadId=id.replace('upload-','');
+      try{
+        const resp=await fetch(apiUrl(`/api/upload/${uploadId}`),{method:'DELETE'});
+        if(!resp.ok){
+          const text=await resp.text();
+          throw new Error(text||`Delete failed: ${resp.status}`);
+        }
+      }catch(err){
+        console.error('Failed to delete saved week from server.',err);
+        alert(`Delete failed: ${err && err.message ? err.message : err}`);
+        return;
+      }
       const index=savedWeekRecords.findIndex(record=>record.id===id);
       if(index===-1) return;
       savedWeekRecords.splice(index,1);
@@ -2701,6 +2714,21 @@
       const start=clampLineViewStart(clampedStart,windowMinutes);
       const windowChanged=Math.abs(lineViewState.windowMinutes-windowMinutes)>=0.5;
       const startChanged=Math.abs(lineViewState.startMinute-start)>=0.5;
+      const isActivePreset=linePresetButtonList.some(btn=>{
+        if(!btn || btn.disabled) return false;
+        const btnStart=parseFloat(btn.dataset.start);
+        const btnEnd=parseFloat(btn.dataset.end);
+        if(!Number.isFinite(btnStart) || !Number.isFinite(btnEnd) || btnEnd<=btnStart) return false;
+        const btnWindow=btnEnd-btnStart;
+        return Math.abs(lineViewState.startMinute-btnStart)<=1 && Math.abs(lineViewState.windowMinutes-btnWindow)<=1;
+      });
+      if(isActivePreset && !windowChanged && !startChanged){
+        lineViewState.windowMinutes=LINE_VIEW_DEFAULT_STATE.windowMinutes;
+        lineViewState.startMinute=LINE_VIEW_DEFAULT_STATE.startMinute;
+        lineViewBaseMinutesPerPixel=null;
+        drawCurrentLineChart();
+        return;
+      }
       if(!windowChanged && !startChanged) return;
       lineViewState.windowMinutes=windowMinutes;
       lineViewState.startMinute=start;
@@ -4152,8 +4180,8 @@
       setViewerTabsVisibility(weeks.length>0);
       updateIndividualControls(weeks);
       syncAppearanceControls(weeks);
-      if(!weeks.length && activeView!=='schedule'){
-        switchView('schedule');
+      if(!weeks.length && activeView!=='line'){
+        switchView('line');
       }
       renderScheduleView(weeks);
       renderLineView(weeks);
@@ -5383,7 +5411,7 @@
       line:document.getElementById('viewLine'),
       pdf:document.getElementById('viewPdf'),
     };
-    let activeView='schedule';
+    let activeView='line';
 
     function setViewerTabsVisibility(visible){
       const show=!!visible;
@@ -5440,11 +5468,13 @@
       switchView(activeView);
     }
 
-    function setLineDayIndex(dayIndex){
+    function setLineDayIndex(dayIndex,{preserveWindow=false}={}){
       if(!Number.isFinite(dayIndex) || dayIndex<0) return;
       lineViewUserSelectedDay=true;
       lineViewState.dayIndex=dayIndex;
-      lineViewStateInitialized=false;
+      if(!preserveWindow){
+        lineViewStateInitialized=false;
+      }
       renderLineView(getActiveWeekData());
     }
 
@@ -5461,13 +5491,13 @@
 
     if(lineDayPrev){
       lineDayPrev.addEventListener('click',()=>{
-        setLineDayIndex(Math.max(0,(lineViewState.dayIndex||0)-1));
+        setLineDayIndex(Math.max(0,(lineViewState.dayIndex||0)-1),{preserveWindow:true});
       });
     }
 
     if(lineDayNext){
       lineDayNext.addEventListener('click',()=>{
-        setLineDayIndex((lineViewState.dayIndex||0)+1);
+        setLineDayIndex((lineViewState.dayIndex||0)+1,{preserveWindow:true});
       });
     }
 
@@ -5821,7 +5851,7 @@
       if(colleagueSection) colleagueSection.open=false;
       updateWeekSelectionUI();
       renderViews();
-      switchView('schedule');
+      switchView('line');
     });
   </script>
   </body>

@@ -1,5 +1,5 @@
 name: "Rota PDF Importer"
-version: "2.4.2"
+version: "2.4.3"
 slug: "rota_importer"
 description: "Upload rota PDFs, extract rows, store them, and export CSV"
 url: "https://example.invalid/rota-pdf-importer"
@@ -16,6 +16,8 @@ init: false
 ingress: true
 ingress_port: 8099
 panel_icon: mdi:file-table
+panel_title: Logile Viewer
+panel_admin: false
 
 map:
   - type: addon_config

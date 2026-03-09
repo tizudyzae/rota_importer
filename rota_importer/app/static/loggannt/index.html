@@ -2017,10 +2017,15 @@
       if(!record || !record.model) return null;
       const model=cloneStoredModel(record.model);
       const metadata=deriveWeekMetadata(model);
-      const mergedMeta={...metadata};
+      const recordId=(typeof record.id==='string' && record.id.trim())?record.id:metadata.id;
+      const mergedMeta={...metadata,id:recordId};
+      const uploadMatch=recordId.match(/^upload-(\d+)$/);
+      if(uploadMatch){
+        mergedMeta.uploadId=parseInt(uploadMatch[1],10);
+      }
       const storedAt=Number.isFinite(record.storedAt)?record.storedAt:Date.now();
       const perDay=buildPerDay(model,{fallbackSCH:true,splitMidnight:true});
-      return {id:metadata.id,storedAt,metadata:mergedMeta,model,perDay};
+      return {id:recordId,storedAt,metadata:mergedMeta,model,perDay};
     }
 
     function rebuildWeekCache(){
@@ -2279,18 +2284,25 @@
     }
 
     async function removeWeekRecord(id){
-      if(typeof id!=='string' || !/^upload-\d+$/.test(id)) return;
-      const uploadId=id.replace('upload-','');
-      try{
-        const resp=await fetch(apiUrl(`/api/upload/${uploadId}`),{method:'DELETE'});
-        if(!resp.ok){
-          const text=await resp.text();
-          throw new Error(text||`Delete failed: ${resp.status}`);
+      if(typeof id!=='string') return;
+      const record=savedWeekRecords.find(item=>item && item.id===id) || null;
+      const idMatch=id.match(/^upload-(\d+)$/);
+      const metadataUploadId=record && record.metadata && Number.isFinite(record.metadata.uploadId)
+        ? String(Math.trunc(record.metadata.uploadId))
+        : '';
+      const uploadId=(idMatch && idMatch[1]) || metadataUploadId;
+      if(uploadId){
+        try{
+          const resp=await fetch(apiUrl(`/api/upload/${uploadId}`),{method:'DELETE'});
+          if(!resp.ok){
+            const text=await resp.text();
+            throw new Error(text||`Delete failed: ${resp.status}`);
+          }
+        }catch(err){
+          console.error('Failed to delete saved week from server.',err);
+          alert(`Delete failed: ${err && err.message ? err.message : err}`);
+          return;
         }
-      }catch(err){
-        console.error('Failed to delete saved week from server.',err);
-        alert(`Delete failed: ${err && err.message ? err.message : err}`);
-        return;
       }
       const index=savedWeekRecords.findIndex(record=>record.id===id);
       if(index===-1) return;
@@ -5474,6 +5486,8 @@
       lineViewState.dayIndex=dayIndex;
       if(!preserveWindow){
         lineViewStateInitialized=false;
+      }else{
+        lineViewCarryAcrossDayChange=true;
       }
       renderLineView(getActiveWeekData());
     }

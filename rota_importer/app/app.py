@@ -429,10 +429,13 @@ def viewer(request: Request):
     html = index_path.read_text(encoding="utf-8")
 
     base = ingress_base(request)
-    injected = (
-        f"<script>window.__APP_BASE__={json.dumps(base)};</script>"
-        f"<script src=\"{base}/static/loggannt/ha-bridge.js\"></script>"
-    )
+    base_script = f"<script>window.__APP_BASE__={json.dumps(base)};</script>"
+    if "<head>" in html:
+        html = html.replace("<head>", f"<head>{base_script}", 1)
+    else:
+        html = base_script + html
+
+    injected = f"<script src=\"{base}/static/loggannt/ha-bridge.js\"></script>"
 
     if "</body>" in html:
         html = html.replace("</body>", f"{injected}</body>")
@@ -453,10 +456,13 @@ def help_page(request: Request):
         "server-backed",
     )
 
-    injected = (
-        f"<script>window.__APP_BASE__={json.dumps(base)};</script>"
-        f"<script src=\"{base}/static/loggannt/ha-bridge.js\"></script>"
-    )
+    base_script = f"<script>window.__APP_BASE__={json.dumps(base)};</script>"
+    if "<head>" in html:
+        html = html.replace("<head>", f"<head>{base_script}", 1)
+    else:
+        html = base_script + html
+
+    injected = f"<script src=\"{base}/static/loggannt/ha-bridge.js\"></script>"
 
     if "</body>" in html:
         html = html.replace("</body>", f"{injected}</body>")
@@ -553,7 +559,6 @@ async def api_put_preferences(device_id: str, request: Request):
         )
         conn.commit()
 
-    
 
     return JSONResponse({"ok": True, "device_id": clean_device_id})
 
@@ -577,6 +582,15 @@ async def api_upload_pdf(file: UploadFile = File(...)):
     shifts = parse_pdf_to_shift_rows(target_path, file.filename)
 
     with get_conn() as conn:
+        existing_uploads = conn.execute(
+            "SELECT id, stored_filename FROM uploads WHERE original_filename = ?",
+            (file.filename,),
+        ).fetchall()
+
+        for row in existing_uploads:
+            conn.execute("DELETE FROM shifts WHERE upload_id = ?", (row["id"],))
+            conn.execute("DELETE FROM uploads WHERE id = ?", (row["id"],))
+
         cur = conn.execute(
             "INSERT INTO uploads (original_filename, stored_filename, uploaded_at) VALUES (?, ?, ?)",
             (file.filename, stored_name, datetime.utcnow().isoformat(timespec="seconds")),
@@ -605,6 +619,7 @@ async def api_upload_pdf(file: UploadFile = File(...)):
                 ),
             )
         conn.commit()
+
 
     
 
@@ -677,3 +692,27 @@ def export_csv(upload_id: int):
         filename=export_name,
         media_type="text/csv",
     )
+
+
+@app.delete("/api/upload/{upload_id}")
+def api_delete_upload(upload_id: int):
+    with get_conn() as conn:
+        upload = conn.execute(
+            "SELECT id, stored_filename FROM uploads WHERE id = ?",
+            (upload_id,),
+        ).fetchone()
+        if not upload:
+            raise HTTPException(status_code=404, detail="Upload not found")
+
+        conn.execute("DELETE FROM shifts WHERE upload_id = ?", (upload_id,))
+        conn.execute("DELETE FROM uploads WHERE id = ?", (upload_id,))
+        conn.commit()
+
+    stored_filename = upload["stored_filename"] or ""
+    if stored_filename:
+        try:
+            (UPLOAD_DIR / stored_filename).unlink(missing_ok=True)
+        except Exception:
+            pass
+
+    return JSONResponse({"ok": True, "upload_id": upload_id})

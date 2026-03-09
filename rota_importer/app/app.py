@@ -20,7 +20,7 @@ LOGGANNT_DIR = STATIC_DIR / "loggannt"
 ADDON_DATA_DIR = Path("/config")
 UPLOAD_DIR = ADDON_DATA_DIR / "uploads"
 EXPORT_DIR = ADDON_DATA_DIR / "exports"
-DB_PATH = Path(os.environ.get("ROTA_DB_PATH", "/homeassistant/rota.db"))
+DB_PATH = Path("/homeassistant/rota.db")
 
 app = FastAPI(title="Rota PDF Importer")
 

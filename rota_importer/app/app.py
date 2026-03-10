@@ -419,6 +419,20 @@ def parse_shift_cell(cell: str) -> tuple[str, str]:
     return start_time, end_time
 
 
+def format_shift_text(raw_cell: str, start_time: str, end_time: str) -> str:
+    raw_clean = clean_cell(raw_cell)
+    parsed_range = TIME_RANGE_RE.search(raw_clean)
+    if parsed_range:
+        return f"{parsed_range.group(1)} - {parsed_range.group(2)}"
+
+    start_clean = clean_cell(start_time)
+    end_clean = clean_cell(end_time)
+    if start_clean and end_clean:
+        return f"{start_clean} - {end_clean}"
+
+    return raw_clean
+
+
 def normalize_employee_name(name: str) -> str:
     cleaned = clean_cell(name)
     if not cleaned:
@@ -758,7 +772,7 @@ def get_subject_shift_and_coworkers(subject_name: str, today: str) -> dict:
         start_time = clean_cell(me["start_time"])
         end_time = clean_cell(me["end_time"])
         raw_cell = clean_cell(me["raw_cell"])
-        shift_text = raw_cell or f"{start_time}-{end_time}"
+        shift_text = format_shift_text(raw_cell, start_time, end_time)
 
         if not start_time or not end_time:
             return {
@@ -829,6 +843,9 @@ def build_notification_payload_from_settings() -> dict:
 
         title = render_simple_template(settings["title_template"], context).strip()
         message = render_simple_template(settings["message_template"], context).strip()
+
+        if rota_context["status"] in {"NOT_FOUND", "NOT_WORKING"}:
+            message = ""
 
         if not title:
             title = f"Today's rota for {subject_name}"

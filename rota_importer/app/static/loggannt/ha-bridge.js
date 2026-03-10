@@ -299,12 +299,12 @@
     const subjectSelect = q(".pair-subject", row);
     const serviceSelect = q(".pair-service", row);
 
-    subjectSelect.innerHTML = subjects
-      .map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`)
-      .join("");
-    serviceSelect.innerHTML = services
-      .map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`)
-      .join("");
+    subjectSelect.innerHTML = subjects.length
+      ? subjects.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join("")
+      : '<option value="">No subjects available</option>';
+    serviceSelect.innerHTML = services.length
+      ? services.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join("")
+      : '<option value="">No notify services available</option>';
 
     if (subject) subjectSelect.value = subject;
     if (service) serviceSelect.value = service;
@@ -428,7 +428,7 @@
     const settings = await settingsResp.json();
     const servicesPayload = servicesResp.ok ? await servicesResp.json() : { services: [] };
     const subjectsPayload = subjectsResp.ok ? await subjectsResp.json() : { subjects: [] };
-    const services = Array.isArray(servicesPayload.services) && servicesPayload.services.length ? servicesPayload.services : ["notify.mobile_app_iphone_15_pro"];
+    const services = Array.isArray(servicesPayload.services) ? servicesPayload.services : [];
     const subjects = Array.isArray(subjectsPayload.subjects) ? subjectsPayload.subjects : [];
 
     applyNotificationSettingsToForm(settings, subjects, services);

@@ -6,7 +6,9 @@ import shutil
 import sqlite3
 from datetime import datetime
 from pathlib import Path
-from typing import List
+from typing import Any, Dict, List, Optional
+from urllib import error as urlerror
+from urllib import request as urlrequest
 
 import pdfplumber
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
@@ -22,6 +24,8 @@ UPLOAD_DIR = ADDON_DATA_DIR / "uploads"
 EXPORT_DIR = ADDON_DATA_DIR / "exports"
 DB_PATH = Path("/homeassistant/rota.db")
 
+HA_CORE_API_BASE = "http://supervisor/core/api"
+
 app = FastAPI(title="Rota PDF Importer")
 
 EMPLOYEE_ID_RE = re.compile(r"\((\d+)\)")
@@ -36,7 +40,78 @@ def get_conn() -> sqlite3.Connection:
     return conn
 
 
+def now_iso() -> str:
+    return datetime.utcnow().isoformat(timespec="seconds")
 
+
+def clean_cell(value) -> str:
+    if value is None:
+        return ""
+    return " ".join(str(value).replace("\n", " ").split()).strip()
+
+
+def normalize_table_row(row: List[str], column_count: int) -> List[str]:
+    cleaned = [clean_cell(x) for x in row]
+    if len(cleaned) < column_count:
+        cleaned += [""] * (column_count - len(cleaned))
+    elif len(cleaned) > column_count:
+        cleaned = cleaned[:column_count]
+    return cleaned
+
+
+def sanitize_bool(value: Any, default: bool = False) -> int:
+    if isinstance(value, bool):
+        return 1 if value else 0
+    if isinstance(value, str):
+        return 1 if value.strip().lower() in {"1", "true", "yes", "on"} else 0
+    if isinstance(value, (int, float)):
+        return 1 if value else 0
+    return 1 if default else 0
+
+
+def sanitize_text(value: Any, max_len: int = 500, default: str = "") -> str:
+    if value is None:
+        return default
+    return str(value).strip()[:max_len]
+
+
+def sanitize_time_hhmm(value: Any, default: str = "07:00") -> str:
+    text = sanitize_text(value, max_len=5, default=default)
+    if re.fullmatch(r"\d{2}:\d{2}", text):
+        return text
+    return default
+
+
+def sanitize_weekdays(value: Any) -> str:
+    if not isinstance(value, list):
+        return json.dumps(DAY_ORDER)
+
+    cleaned = []
+    for item in value:
+        day = sanitize_text(item, max_len=3).lower()
+        if day in DAY_ORDER and day not in cleaned:
+            cleaned.append(day)
+
+    if not cleaned:
+        cleaned = DAY_ORDER.copy()
+
+    return json.dumps(cleaned)
+
+
+def parse_json_object(raw: str, fallback: dict) -> dict:
+    try:
+        parsed = json.loads(raw or "{}")
+        return parsed if isinstance(parsed, dict) else fallback
+    except Exception:
+        return fallback
+
+
+def parse_json_list(raw: str, fallback: list) -> list:
+    try:
+        parsed = json.loads(raw or "[]")
+        return parsed if isinstance(parsed, list) else fallback
+    except Exception:
+        return fallback
 
 
 def init_db() -> None:
@@ -92,6 +167,25 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS notification_settings (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                enabled INTEGER NOT NULL DEFAULT 1,
+                subject_name TEXT NOT NULL DEFAULT 'Nathan',
+                notify_service TEXT NOT NULL DEFAULT 'notify.mobile_app_iphone_15_pro',
+                notify_time TEXT NOT NULL DEFAULT '07:00',
+                weekdays_json TEXT NOT NULL DEFAULT '["sun","mon","tue","wed","thu","fri","sat"]',
+                title_template TEXT NOT NULL DEFAULT 'Today''s rota for {{ subject_name }}',
+                message_template TEXT NOT NULL DEFAULT '{{ subject_name }} is working {{ shift }} with: {{ coworkers }}.',
+                sound TEXT NOT NULL DEFAULT '',
+                image_url TEXT NOT NULL DEFAULT '',
+                extra_data_json TEXT NOT NULL DEFAULT '{}',
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+
         existing_global = conn.execute(
             "SELECT singleton_key FROM app_preferences WHERE singleton_key = 'global'"
         ).fetchone()
@@ -113,9 +207,46 @@ def init_db() -> None:
                     (
                         latest_device["color_preferences"] or "{}",
                         latest_device["alias_preferences"] or "{}",
-                        latest_device["updated_at"] or datetime.utcnow().isoformat(timespec="seconds"),
+                        latest_device["updated_at"] or now_iso(),
                     ),
                 )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO app_preferences (singleton_key, color_preferences, alias_preferences, updated_at)
+                    VALUES ('global', '{}', '{}', ?)
+                    """,
+                    (now_iso(),),
+                )
+
+        existing_notification_settings = conn.execute(
+            "SELECT id FROM notification_settings WHERE id = 1"
+        ).fetchone()
+        if not existing_notification_settings:
+            conn.execute(
+                """
+                INSERT INTO notification_settings (
+                    id, enabled, subject_name, notify_service, notify_time,
+                    weekdays_json, title_template, message_template, sound,
+                    image_url, extra_data_json, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    1,
+                    1,
+                    "Nathan",
+                    "notify.mobile_app_iphone_15_pro",
+                    "07:00",
+                    json.dumps(DAY_ORDER),
+                    "Today's rota for {{ subject_name }}",
+                    "{{ subject_name }} is working {{ shift }} with: {{ coworkers }}.",
+                    "",
+                    "",
+                    "{}",
+                    now_iso(),
+                ),
+            )
+
         conn.commit()
 
 
@@ -124,25 +255,9 @@ def startup() -> None:
     print(f"Using DB path: {DB_PATH}")
     print(f"DB parent exists: {DB_PATH.parent.exists()}")
     init_db()
-   
 
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
-
-
-def clean_cell(value) -> str:
-    if value is None:
-        return ""
-    return " ".join(str(value).replace("\n", " ").split()).strip()
-
-
-def normalize_table_row(row: List[str], column_count: int) -> List[str]:
-    cleaned = [clean_cell(x) for x in row]
-    if len(cleaned) < column_count:
-        cleaned += [""] * (column_count - len(cleaned))
-    elif len(cleaned) > column_count:
-        cleaned = cleaned[:column_count]
-    return cleaned
 
 
 def parse_headers(header_row: List[str]) -> dict:
@@ -457,6 +572,278 @@ def sanitize_preferences_payload(payload: dict | None) -> tuple[dict, dict]:
     return colors, aliases
 
 
+def get_notification_settings_row() -> sqlite3.Row:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT * FROM notification_settings WHERE id = 1"
+        ).fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Notification settings not found")
+
+    return row
+
+
+def serialize_notification_settings(row: sqlite3.Row) -> dict:
+    return {
+        "enabled": bool(row["enabled"]),
+        "subject_name": row["subject_name"] or "",
+        "notify_service": row["notify_service"] or "",
+        "notify_time": row["notify_time"] or "07:00",
+        "weekdays": parse_json_list(row["weekdays_json"], DAY_ORDER.copy()),
+        "title_template": row["title_template"] or "",
+        "message_template": row["message_template"] or "",
+        "sound": row["sound"] or "",
+        "image_url": row["image_url"] or "",
+        "extra_data": parse_json_object(row["extra_data_json"], {}),
+        "updated_at": row["updated_at"] or "",
+    }
+
+
+def render_simple_template(template: str, context: Dict[str, Any]) -> str:
+    output = str(template or "")
+    for key, value in context.items():
+        token = "{{ " + key + " }}"
+        output = output.replace(token, str(value))
+        token_no_space = "{{" + key + "}}"
+        output = output.replace(token_no_space, str(value))
+    return output
+
+
+def get_latest_relevant_upload_id(subject_name: str, today: str) -> Optional[int]:
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT upload_id
+            FROM shifts
+            WHERE shift_date = ?
+              AND employee = ?
+            ORDER BY upload_id DESC
+            LIMIT 1
+            """,
+            (today, subject_name),
+        ).fetchone()
+
+        if row:
+            return row["upload_id"]
+
+        row = conn.execute(
+            """
+            SELECT upload_id
+            FROM shifts
+            WHERE shift_date = ?
+            ORDER BY upload_id DESC
+            LIMIT 1
+            """,
+            (today,),
+        ).fetchone()
+
+    return row["upload_id"] if row else None
+
+
+def get_subject_shift_and_coworkers(subject_name: str, today: str) -> dict:
+    upload_id = get_latest_relevant_upload_id(subject_name, today)
+
+    if not upload_id:
+        return {
+            "status": "NOT_FOUND",
+            "subject_name": subject_name,
+            "today": today,
+            "shift": "",
+            "coworkers_list": [],
+            "coworkers": "Nobody found",
+            "upload_id": None,
+        }
+
+    with get_conn() as conn:
+        me = conn.execute(
+            """
+            SELECT start_time, end_time, raw_cell
+            FROM shifts
+            WHERE upload_id = ?
+              AND shift_date = ?
+              AND employee = ?
+            LIMIT 1
+            """,
+            (upload_id, today, subject_name),
+        ).fetchone()
+
+        if not me:
+            return {
+                "status": "NOT_WORKING",
+                "subject_name": subject_name,
+                "today": today,
+                "shift": "",
+                "coworkers_list": [],
+                "coworkers": "Nobody found",
+                "upload_id": upload_id,
+            }
+
+        start_time = clean_cell(me["start_time"])
+        end_time = clean_cell(me["end_time"])
+        raw_cell = clean_cell(me["raw_cell"])
+        shift_text = raw_cell or f"{start_time}-{end_time}"
+
+        if not start_time or not end_time:
+            return {
+                "status": "NOT_WORKING",
+                "subject_name": subject_name,
+                "today": today,
+                "shift": shift_text,
+                "coworkers_list": [],
+                "coworkers": "Nobody found",
+                "upload_id": upload_id,
+            }
+
+        rows = conn.execute(
+            """
+            SELECT employee
+            FROM shifts
+            WHERE upload_id = ?
+              AND shift_date = ?
+              AND employee != ?
+              AND TRIM(COALESCE(start_time, '')) != ''
+              AND TRIM(COALESCE(end_time, '')) != ''
+              AND start_time < ?
+              AND end_time > ?
+            ORDER BY start_time, employee
+            """,
+            (upload_id, today, subject_name, end_time, start_time),
+        ).fetchall()
+
+    coworkers_list = [clean_cell(row["employee"]) for row in rows if clean_cell(row["employee"])]
+    coworkers = ", ".join(coworkers_list) if coworkers_list else "Nobody found"
+
+    return {
+        "status": "WORKING",
+        "subject_name": subject_name,
+        "today": today,
+        "shift": shift_text,
+        "coworkers_list": coworkers_list,
+        "coworkers": coworkers,
+        "upload_id": upload_id,
+    }
+
+
+def build_notification_payload_from_settings() -> dict:
+    settings_row = get_notification_settings_row()
+    settings = serialize_notification_settings(settings_row)
+
+    subject_name = settings["subject_name"] or "Nathan"
+    today = datetime.now().strftime("%Y-%m-%d")
+    rota_context = get_subject_shift_and_coworkers(subject_name, today)
+
+    context = {
+        "subject_name": rota_context["subject_name"],
+        "status": rota_context["status"],
+        "today": rota_context["today"],
+        "shift": rota_context["shift"],
+        "coworkers": rota_context["coworkers"],
+        "upload_id": rota_context["upload_id"] or "",
+    }
+
+    title = render_simple_template(settings["title_template"], context).strip()
+    message = render_simple_template(settings["message_template"], context).strip()
+
+    if not title:
+        title = f"Today's rota for {subject_name}"
+
+    if not message:
+        if rota_context["status"] == "NOT_FOUND":
+            message = "No rota uploaded for today."
+        elif rota_context["status"] == "NOT_WORKING":
+            message = f"{subject_name} is not rota'd in today."
+        else:
+            message = f"{subject_name} is working {rota_context['shift']} with: {rota_context['coworkers']}."
+
+    data_payload = settings["extra_data"] if isinstance(settings["extra_data"], dict) else {}
+
+    if settings["sound"]:
+        push = data_payload.get("push", {})
+        sound_payload = push.get("sound", {})
+        if not isinstance(push, dict):
+            push = {}
+        if not isinstance(sound_payload, dict):
+            sound_payload = {}
+
+        sound_payload["name"] = settings["sound"]
+        push["sound"] = sound_payload
+        data_payload["push"] = push
+
+    if settings["image_url"]:
+        data_payload["image"] = settings["image_url"]
+
+    return {
+        "enabled": settings["enabled"],
+        "notify_service": settings["notify_service"],
+        "notify_time": settings["notify_time"],
+        "weekdays": settings["weekdays"],
+        "title": title,
+        "message": message,
+        "data": data_payload,
+        "context": context,
+    }
+
+
+def call_home_assistant_api(method: str, path: str, payload: Optional[dict] = None) -> tuple[int, Any]:
+    token = os.environ.get("SUPERVISOR_TOKEN", "").strip()
+    if not token:
+        raise HTTPException(status_code=500, detail="SUPERVISOR_TOKEN is not available")
+
+    url = f"{HA_CORE_API_BASE}{path}"
+    body = None
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+
+    if payload is not None:
+        body = json.dumps(payload).encode("utf-8")
+
+    req = urlrequest.Request(url, data=body, headers=headers, method=method.upper())
+
+    try:
+        with urlrequest.urlopen(req, timeout=15) as response:
+            raw = response.read().decode("utf-8")
+            if not raw:
+                return response.status, {}
+            try:
+                return response.status, json.loads(raw)
+            except Exception:
+                return response.status, raw
+    except urlerror.HTTPError as exc:
+        raw = exc.read().decode("utf-8", errors="replace")
+        try:
+            return exc.code, json.loads(raw)
+        except Exception:
+            return exc.code, raw
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Failed to call Home Assistant API: {exc}") from exc
+
+
+def list_notify_services() -> list[str]:
+    status_code, payload = call_home_assistant_api("GET", "/services")
+    if status_code >= 400:
+        return []
+
+    services = []
+    if isinstance(payload, list):
+        for domain_block in payload:
+            if not isinstance(domain_block, dict):
+                continue
+            domain = domain_block.get("domain")
+            if domain != "notify":
+                continue
+            services_block = domain_block.get("services", {})
+            if not isinstance(services_block, dict):
+                continue
+            for service_name in services_block.keys():
+                services.append(f"notify.{service_name}")
+
+    services = sorted(set(services))
+    return services
+
+
 @app.get("/", response_class=HTMLResponse)
 def viewer(request: Request):
     index_path = LOGGANNT_DIR / "index.html"
@@ -485,10 +872,7 @@ def help_page(request: Request):
     html = help_path.read_text(encoding="utf-8")
     base = ingress_base(request)
 
-    html = html.replace(
-        "client-side",
-        "server-backed",
-    )
+    html = html.replace("client-side", "server-backed")
 
     base_script = f"<script>window.__APP_BASE__={json.dumps(base)};</script>"
     if "<head>" in html:
@@ -536,7 +920,7 @@ def api_viewer_sync():
 def api_get_preferences():
     with get_conn() as conn:
         row = conn.execute(
-            "SELECT color_preferences, alias_preferences FROM app_preferences WHERE singleton_key = 'global'",
+            "SELECT color_preferences, alias_preferences FROM app_preferences WHERE singleton_key = 'global'"
         ).fetchone()
 
     if not row:
@@ -567,7 +951,7 @@ async def api_put_preferences(request: Request):
         raise HTTPException(status_code=400, detail="Invalid JSON payload") from exc
 
     colors, aliases = sanitize_preferences_payload(body)
-    now = datetime.utcnow().isoformat(timespec="seconds")
+    now = now_iso()
 
     with get_conn() as conn:
         conn.execute(
@@ -583,7 +967,6 @@ async def api_put_preferences(request: Request):
         )
         conn.commit()
 
-
     return JSONResponse({"ok": True})
 
 
@@ -595,6 +978,134 @@ def api_get_preferences_legacy(device_id: str):
 @app.put("/api/preferences/{device_id}")
 async def api_put_preferences_legacy(device_id: str, request: Request):
     return await api_put_preferences(request)
+
+
+@app.get("/api/notification_settings")
+def api_get_notification_settings():
+    row = get_notification_settings_row()
+    return JSONResponse(serialize_notification_settings(row))
+
+
+@app.put("/api/notification_settings")
+async def api_put_notification_settings(request: Request):
+    try:
+        body = await request.json()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid JSON payload") from exc
+
+    enabled = sanitize_bool(body.get("enabled", True), default=True)
+    subject_name = sanitize_text(body.get("subject_name"), max_len=120, default="Nathan")
+    notify_service = sanitize_text(
+        body.get("notify_service"),
+        max_len=200,
+        default="notify.mobile_app_iphone_15_pro",
+    )
+    notify_time = sanitize_time_hhmm(body.get("notify_time"), default="07:00")
+    weekdays_json = sanitize_weekdays(body.get("weekdays"))
+    title_template = sanitize_text(
+        body.get("title_template"),
+        max_len=500,
+        default="Today's rota for {{ subject_name }}",
+    )
+    message_template = sanitize_text(
+        body.get("message_template"),
+        max_len=2000,
+        default="{{ subject_name }} is working {{ shift }} with: {{ coworkers }}.",
+    )
+    sound = sanitize_text(body.get("sound"), max_len=120, default="")
+    image_url = sanitize_text(body.get("image_url"), max_len=500, default="")
+    extra_data = body.get("extra_data", {})
+    if not isinstance(extra_data, dict):
+        extra_data = {}
+    updated_at = now_iso()
+
+    with get_conn() as conn:
+        conn.execute(
+            """
+            UPDATE notification_settings
+            SET enabled = ?,
+                subject_name = ?,
+                notify_service = ?,
+                notify_time = ?,
+                weekdays_json = ?,
+                title_template = ?,
+                message_template = ?,
+                sound = ?,
+                image_url = ?,
+                extra_data_json = ?,
+                updated_at = ?
+            WHERE id = 1
+            """,
+            (
+                enabled,
+                subject_name,
+                notify_service,
+                notify_time,
+                weekdays_json,
+                title_template,
+                message_template,
+                sound,
+                image_url,
+                json.dumps(extra_data),
+                updated_at,
+            ),
+        )
+        conn.commit()
+
+    return JSONResponse({"ok": True})
+
+
+@app.get("/api/notification_preview")
+def api_notification_preview():
+    payload = build_notification_payload_from_settings()
+    return JSONResponse(payload)
+
+
+@app.get("/api/ha_notify_services")
+def api_ha_notify_services():
+    services = list_notify_services()
+    return JSONResponse({"services": services})
+
+
+@app.post("/api/test_notification")
+def api_test_notification():
+    payload = build_notification_payload_from_settings()
+
+    notify_service = payload["notify_service"]
+    if "." not in notify_service:
+        raise HTTPException(status_code=400, detail="notify_service must look like notify.some_service")
+
+    domain, service = notify_service.split(".", 1)
+    service_payload = {
+        "title": payload["title"],
+        "message": payload["message"],
+        "data": payload["data"],
+    }
+
+    status_code, response_payload = call_home_assistant_api(
+        "POST",
+        f"/services/{domain}/{service}",
+        service_payload,
+    )
+
+    if status_code >= 400:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message": "Home Assistant notify service call failed",
+                "status_code": status_code,
+                "response": response_payload,
+            },
+        )
+
+    return JSONResponse(
+        {
+            "ok": True,
+            "sent_via": notify_service,
+            "payload": service_payload,
+            "ha_response": response_payload,
+        }
+    )
 
 
 @app.post("/api/upload_pdf")
@@ -627,7 +1138,7 @@ async def api_upload_pdf(file: UploadFile = File(...)):
 
         cur = conn.execute(
             "INSERT INTO uploads (original_filename, stored_filename, uploaded_at) VALUES (?, ?, ?)",
-            (file.filename, stored_name, datetime.utcnow().isoformat(timespec="seconds")),
+            (file.filename, stored_name, now_iso()),
         )
         upload_id = cur.lastrowid
 
@@ -653,9 +1164,6 @@ async def api_upload_pdf(file: UploadFile = File(...)):
                 ),
             )
         conn.commit()
-
-
-    
 
     return JSONResponse(
         {

@@ -748,6 +748,8 @@ def get_subject_shift_and_coworkers(subject_name: str, today: str) -> dict:
                 "subject_name": subject_name,
                 "today": today,
                 "shift": "",
+                "start_time": "",
+                "end_time": "",
                 "coworkers_list": [],
                 "coworkers": "Nobody found",
                 "upload_id": upload_id,
@@ -764,6 +766,8 @@ def get_subject_shift_and_coworkers(subject_name: str, today: str) -> dict:
                 "subject_name": subject_name,
                 "today": today,
                 "shift": shift_text,
+                "start_time": start_time,
+                "end_time": end_time,
                 "coworkers_list": [],
                 "coworkers": "Nobody found",
                 "upload_id": upload_id,
@@ -793,6 +797,8 @@ def get_subject_shift_and_coworkers(subject_name: str, today: str) -> dict:
         "subject_name": subject_name,
         "today": today,
         "shift": shift_text,
+        "start_time": start_time,
+        "end_time": end_time,
         "coworkers_list": coworkers_list,
         "coworkers": coworkers,
         "upload_id": upload_id,
@@ -854,7 +860,12 @@ def build_notification_payload_from_settings() -> dict:
             data_payload["image"] = settings["image_url"]
 
         trigger_at = ""
-        start_time = clean_cell((rota_context.get("shift") or "").split("-")[0])
+        start_time = clean_cell(rota_context.get("start_time"))
+        if not re.fullmatch(r"\d{2}:\d{2}", start_time):
+            parsed_range = TIME_RANGE_RE.search(clean_cell(rota_context.get("shift")))
+            if parsed_range:
+                start_time = parsed_range.group(1)
+
         if re.fullmatch(r"\d{2}:\d{2}", start_time):
             shift_start = datetime.strptime(f"{today} {start_time}", "%Y-%m-%d %H:%M")
             trigger_at = (shift_start - timedelta(hours=2)).isoformat(timespec="minutes")

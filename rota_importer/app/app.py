@@ -301,8 +301,8 @@ def init_db() -> None:
                 (
                     1,
                     1,
-                    json.dumps(["Nathan"]),
-                    json.dumps({"Nathan": "notify.mobile_app_iphone_15_pro"}),
+                    "[]",
+                    "{}",
                     json.dumps(DAY_ORDER),
                     "Today's rota for {{ subject_name }}",
                     "{{ subject_name }} is working {{ shift }} with: {{ coworkers }}.",

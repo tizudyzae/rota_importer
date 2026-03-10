@@ -4,7 +4,7 @@ import os
 import re
 import shutil
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib import error as urlerror
@@ -80,6 +80,33 @@ def sanitize_time_hhmm(value: Any, default: str = "07:00") -> str:
     if re.fullmatch(r"\d{2}:\d{2}", text):
         return text
     return default
+
+
+def sanitize_subject_list(value: Any) -> str:
+    if not isinstance(value, list):
+        return json.dumps([])
+
+    cleaned: list[str] = []
+    for item in value:
+        name = sanitize_text(item, max_len=120, default="")
+        if name and name not in cleaned:
+            cleaned.append(name)
+
+    return json.dumps(cleaned)
+
+
+def sanitize_subject_service_map(value: Any) -> str:
+    if not isinstance(value, dict):
+        return "{}"
+
+    cleaned: dict[str, str] = {}
+    for key, raw_service in value.items():
+        subject = sanitize_text(key, max_len=120, default="")
+        service = sanitize_text(raw_service, max_len=200, default="")
+        if subject and service:
+            cleaned[subject] = service
+
+    return json.dumps(cleaned)
 
 
 def sanitize_weekdays(value: Any) -> str:
@@ -172,9 +199,8 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS notification_settings (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 enabled INTEGER NOT NULL DEFAULT 1,
-                subject_name TEXT NOT NULL DEFAULT 'Nathan',
-                notify_service TEXT NOT NULL DEFAULT 'notify.mobile_app_iphone_15_pro',
-                notify_time TEXT NOT NULL DEFAULT '07:00',
+                subject_names_json TEXT NOT NULL DEFAULT '[]',
+                subject_service_map_json TEXT NOT NULL DEFAULT '{}',
                 weekdays_json TEXT NOT NULL DEFAULT '["sun","mon","tue","wed","thu","fri","sat"]',
                 title_template TEXT NOT NULL DEFAULT 'Today''s rota for {{ subject_name }}',
                 message_template TEXT NOT NULL DEFAULT '{{ subject_name }} is working {{ shift }} with: {{ coworkers }}.',
@@ -185,6 +211,47 @@ def init_db() -> None:
             )
             """
         )
+
+
+        columns = {
+            row["name"]
+            for row in conn.execute("PRAGMA table_info(notification_settings)").fetchall()
+        }
+        if "subject_names_json" not in columns:
+            conn.execute(
+                "ALTER TABLE notification_settings ADD COLUMN subject_names_json TEXT NOT NULL DEFAULT '[]'"
+            )
+        if "subject_service_map_json" not in columns:
+            conn.execute(
+                "ALTER TABLE notification_settings ADD COLUMN subject_service_map_json TEXT NOT NULL DEFAULT '{}'"
+            )
+
+        if "subject_name" in columns and "notify_service" in columns:
+            legacy_row = conn.execute(
+                """
+                SELECT id, subject_name, notify_service, subject_names_json, subject_service_map_json
+                FROM notification_settings
+                WHERE id = 1
+                """
+            ).fetchone()
+            if legacy_row:
+                subject_names_existing = parse_json_list(legacy_row["subject_names_json"], [])
+                service_map_existing = parse_json_object(legacy_row["subject_service_map_json"], {})
+                has_new_values = bool(subject_names_existing) and bool(service_map_existing)
+                if not has_new_values:
+                    legacy_subject = clean_cell(legacy_row["subject_name"])
+                    legacy_service = clean_cell(legacy_row["notify_service"])
+                    subject_names_json = json.dumps([legacy_subject] if legacy_subject else [])
+                    subject_service_map_json = json.dumps({legacy_subject: legacy_service}) if (legacy_subject and legacy_service) else "{}"
+                    conn.execute(
+                        """
+                        UPDATE notification_settings
+                        SET subject_names_json = ?,
+                            subject_service_map_json = ?
+                        WHERE id = 1
+                        """,
+                        (subject_names_json, subject_service_map_json),
+                    )
 
         existing_global = conn.execute(
             "SELECT singleton_key FROM app_preferences WHERE singleton_key = 'global'"
@@ -226,17 +293,16 @@ def init_db() -> None:
             conn.execute(
                 """
                 INSERT INTO notification_settings (
-                    id, enabled, subject_name, notify_service, notify_time,
+                    id, enabled, subject_names_json, subject_service_map_json,
                     weekdays_json, title_template, message_template, sound,
                     image_url, extra_data_json, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     1,
                     1,
-                    "Nathan",
-                    "notify.mobile_app_iphone_15_pro",
-                    "07:00",
+                    json.dumps(["Nathan"]),
+                    json.dumps({"Nathan": "notify.mobile_app_iphone_15_pro"}),
                     json.dumps(DAY_ORDER),
                     "Today's rota for {{ subject_name }}",
                     "{{ subject_name }} is working {{ shift }} with: {{ coworkers }}.",
@@ -585,11 +651,19 @@ def get_notification_settings_row() -> sqlite3.Row:
 
 
 def serialize_notification_settings(row: sqlite3.Row) -> dict:
+    subject_service_map = parse_json_object(row["subject_service_map_json"], {})
+    subject_names = parse_json_list(row["subject_names_json"], [])
+
+    allowed_subjects = []
+    for subject in subject_names:
+        name = clean_cell(subject)
+        if name and name in subject_service_map and name not in allowed_subjects:
+            allowed_subjects.append(name)
+
     return {
         "enabled": bool(row["enabled"]),
-        "subject_name": row["subject_name"] or "",
-        "notify_service": row["notify_service"] or "",
-        "notify_time": row["notify_time"] or "07:00",
+        "subject_names": allowed_subjects,
+        "subject_service_map": subject_service_map,
         "weekdays": parse_json_list(row["weekdays_json"], DAY_ORDER.copy()),
         "title_template": row["title_template"] or "",
         "message_template": row["message_template"] or "",
@@ -729,59 +803,78 @@ def build_notification_payload_from_settings() -> dict:
     settings_row = get_notification_settings_row()
     settings = serialize_notification_settings(settings_row)
 
-    subject_name = settings["subject_name"] or "Nathan"
     today = datetime.now().strftime("%Y-%m-%d")
-    rota_context = get_subject_shift_and_coworkers(subject_name, today)
+    notifications = []
 
-    context = {
-        "subject_name": rota_context["subject_name"],
-        "status": rota_context["status"],
-        "today": rota_context["today"],
-        "shift": rota_context["shift"],
-        "coworkers": rota_context["coworkers"],
-        "upload_id": rota_context["upload_id"] or "",
-    }
+    for subject_name in settings["subject_names"]:
+        notify_service = clean_cell(settings["subject_service_map"].get(subject_name))
+        if not notify_service:
+            continue
 
-    title = render_simple_template(settings["title_template"], context).strip()
-    message = render_simple_template(settings["message_template"], context).strip()
+        rota_context = get_subject_shift_and_coworkers(subject_name, today)
+        context = {
+            "subject_name": rota_context["subject_name"],
+            "status": rota_context["status"],
+            "today": rota_context["today"],
+            "shift": rota_context["shift"],
+            "coworkers": rota_context["coworkers"],
+            "upload_id": rota_context["upload_id"] or "",
+        }
 
-    if not title:
-        title = f"Today's rota for {subject_name}"
+        title = render_simple_template(settings["title_template"], context).strip()
+        message = render_simple_template(settings["message_template"], context).strip()
 
-    if not message:
-        if rota_context["status"] == "NOT_FOUND":
-            message = "No rota uploaded for today."
-        elif rota_context["status"] == "NOT_WORKING":
-            message = f"{subject_name} is not rota'd in today."
-        else:
-            message = f"{subject_name} is working {rota_context['shift']} with: {rota_context['coworkers']}."
+        if not title:
+            title = f"Today's rota for {subject_name}"
 
-    data_payload = settings["extra_data"] if isinstance(settings["extra_data"], dict) else {}
+        if not message:
+            if rota_context["status"] == "NOT_FOUND":
+                message = "No rota uploaded for today."
+            elif rota_context["status"] == "NOT_WORKING":
+                message = f"{subject_name} is not rota'd in today."
+            else:
+                message = f"{subject_name} is working {rota_context['shift']} with: {rota_context['coworkers']}."
 
-    if settings["sound"]:
-        push = data_payload.get("push", {})
-        sound_payload = push.get("sound", {})
-        if not isinstance(push, dict):
-            push = {}
-        if not isinstance(sound_payload, dict):
-            sound_payload = {}
+        data_payload = settings["extra_data"] if isinstance(settings["extra_data"], dict) else {}
+        data_payload = json.loads(json.dumps(data_payload))
 
-        sound_payload["name"] = settings["sound"]
-        push["sound"] = sound_payload
-        data_payload["push"] = push
+        if settings["sound"]:
+            push = data_payload.get("push", {})
+            sound_payload = push.get("sound", {})
+            if not isinstance(push, dict):
+                push = {}
+            if not isinstance(sound_payload, dict):
+                sound_payload = {}
 
-    if settings["image_url"]:
-        data_payload["image"] = settings["image_url"]
+            sound_payload["name"] = settings["sound"]
+            push["sound"] = sound_payload
+            data_payload["push"] = push
+
+        if settings["image_url"]:
+            data_payload["image"] = settings["image_url"]
+
+        trigger_at = ""
+        start_time = clean_cell((rota_context.get("shift") or "").split("-")[0])
+        if re.fullmatch(r"\d{2}:\d{2}", start_time):
+            shift_start = datetime.strptime(f"{today} {start_time}", "%Y-%m-%d %H:%M")
+            trigger_at = (shift_start - timedelta(hours=2)).isoformat(timespec="minutes")
+
+        notifications.append(
+            {
+                "subject_name": subject_name,
+                "notify_service": notify_service,
+                "title": title,
+                "message": message,
+                "data": data_payload,
+                "context": context,
+                "trigger_at": trigger_at,
+            }
+        )
 
     return {
         "enabled": settings["enabled"],
-        "notify_service": settings["notify_service"],
-        "notify_time": settings["notify_time"],
         "weekdays": settings["weekdays"],
-        "title": title,
-        "message": message,
-        "data": data_payload,
-        "context": context,
+        "notifications": notifications,
     }
 
 
@@ -994,13 +1087,17 @@ async def api_put_notification_settings(request: Request):
         raise HTTPException(status_code=400, detail="Invalid JSON payload") from exc
 
     enabled = sanitize_bool(body.get("enabled", True), default=True)
-    subject_name = sanitize_text(body.get("subject_name"), max_len=120, default="Nathan")
-    notify_service = sanitize_text(
-        body.get("notify_service"),
-        max_len=200,
-        default="notify.mobile_app_iphone_15_pro",
-    )
-    notify_time = sanitize_time_hhmm(body.get("notify_time"), default="07:00")
+    subject_service_map_raw = body.get("subject_service_map")
+    subject_service_map_json = sanitize_subject_service_map(subject_service_map_raw)
+    subject_service_map = parse_json_object(subject_service_map_json, {})
+    requested_subjects = body.get("subject_names")
+    if isinstance(requested_subjects, list) and requested_subjects:
+        subject_names_json = sanitize_subject_list(requested_subjects)
+    else:
+        subject_names_json = sanitize_subject_list(list(subject_service_map.keys()))
+    subject_names = parse_json_list(subject_names_json, [])
+    subject_names = [name for name in subject_names if name in subject_service_map]
+    subject_names_json = json.dumps(subject_names)
     weekdays_json = sanitize_weekdays(body.get("weekdays"))
     title_template = sanitize_text(
         body.get("title_template"),
@@ -1024,9 +1121,8 @@ async def api_put_notification_settings(request: Request):
             """
             UPDATE notification_settings
             SET enabled = ?,
-                subject_name = ?,
-                notify_service = ?,
-                notify_time = ?,
+                subject_names_json = ?,
+                subject_service_map_json = ?,
                 weekdays_json = ?,
                 title_template = ?,
                 message_template = ?,
@@ -1038,9 +1134,8 @@ async def api_put_notification_settings(request: Request):
             """,
             (
                 enabled,
-                subject_name,
-                notify_service,
-                notify_time,
+                subject_names_json,
+                subject_service_map_json,
                 weekdays_json,
                 title_template,
                 message_template,
@@ -1070,42 +1165,62 @@ def api_ha_notify_services():
 @app.post("/api/test_notification")
 def api_test_notification():
     payload = build_notification_payload_from_settings()
+    notifications = payload.get("notifications") or []
+    if not notifications:
+        raise HTTPException(status_code=400, detail="No paired subjects/services configured")
 
-    notify_service = payload["notify_service"]
-    if "." not in notify_service:
-        raise HTTPException(status_code=400, detail="notify_service must look like notify.some_service")
+    sent_via = []
+    for item in notifications:
+        notify_service = item["notify_service"]
+        if "." not in notify_service:
+            raise HTTPException(status_code=400, detail="notify_service must look like notify.some_service")
 
-    domain, service = notify_service.split(".", 1)
-    service_payload = {
-        "title": payload["title"],
-        "message": payload["message"],
-        "data": payload["data"],
-    }
+        domain, service = notify_service.split(".", 1)
+        service_payload = {
+            "title": item["title"],
+            "message": item["message"],
+            "data": item["data"],
+        }
 
-    status_code, response_payload = call_home_assistant_api(
-        "POST",
-        f"/services/{domain}/{service}",
-        service_payload,
-    )
-
-    if status_code >= 400:
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "message": "Home Assistant notify service call failed",
-                "status_code": status_code,
-                "response": response_payload,
-            },
+        status_code, response_payload = call_home_assistant_api(
+            "POST",
+            f"/services/{domain}/{service}",
+            service_payload,
         )
+
+        if status_code >= 400:
+            raise HTTPException(
+                status_code=500,
+                detail={
+                    "message": "Home Assistant notify service call failed",
+                    "status_code": status_code,
+                    "response": response_payload,
+                    "subject_name": item.get("subject_name", ""),
+                },
+            )
+        sent_via.append(notify_service)
 
     return JSONResponse(
         {
             "ok": True,
-            "sent_via": notify_service,
-            "payload": service_payload,
-            "ha_response": response_payload,
+            "sent_via": sent_via,
+            "count": len(sent_via),
         }
     )
+
+
+@app.get("/api/notification_subjects")
+def api_notification_subjects():
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT DISTINCT employee
+            FROM shifts
+            WHERE TRIM(COALESCE(employee, '')) != ''
+            ORDER BY employee
+            """
+        ).fetchall()
+    return JSONResponse({"subjects": [clean_cell(row["employee"]) for row in rows if clean_cell(row["employee"])]})
 
 
 @app.post("/api/upload_pdf")

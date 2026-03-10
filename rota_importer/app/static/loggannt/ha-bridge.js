@@ -194,16 +194,16 @@
       .ha-notification-panel{margin-top:12px;padding-top:12px;border-top:1px solid var(--border)}
       .ha-notification-panel .control-group{display:grid;gap:6px;margin-bottom:10px}
       .ha-notification-panel label{font-size:12px;font-weight:600;color:var(--ink)}
-      .ha-notification-panel input,.ha-notification-panel textarea,.ha-notification-panel select{
-        width:100%;border:1px solid var(--border);border-radius:10px;padding:8px 10px;background:#fff;color:var(--ink);font:inherit
-      }
-      .ha-notification-panel .row-inline{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:end}
-      .ha-notification-panel .days-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:4px}
-      .ha-notification-panel .days-grid label{display:flex;gap:4px;align-items:center;justify-content:center;font-weight:500;border:1px solid var(--border);border-radius:8px;padding:6px 4px;background:#fff}
+      .ha-notification-panel input,.ha-notification-panel textarea,.ha-notification-panel select{width:100%;border:1px solid var(--border);border-radius:10px;padding:8px 10px;background:#fff;color:var(--ink);font:inherit}
       .ha-notification-panel .actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
       .ha-notification-panel .actions .btn-primary{grid-column:span 2}
       .ha-notification-status{font-size:12px;color:var(--muted);margin:6px 0 0}
       .ha-preview{background:#fff;border:1px solid var(--border);border-radius:10px;padding:10px;font-size:12px;white-space:pre-wrap;word-break:break-word;max-height:180px;overflow:auto}
+      .subject-pills{display:flex;flex-wrap:wrap;gap:8px}
+      .subject-pill{border:1px solid var(--border);border-radius:999px;padding:6px 12px;background:#fff;cursor:pointer;font-size:12px}
+      .subject-pill.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+      .pairing-popout{border:1px solid var(--border);border-radius:10px;padding:8px;background:var(--surface-soft)}
+      .pairing-row{display:grid;grid-template-columns:1fr 1fr auto;gap:6px;align-items:center;margin-bottom:6px}
     `;
     document.head.appendChild(style);
   }
@@ -219,25 +219,19 @@
     wrapper.id = "haNotificationPanel";
     wrapper.innerHTML = `
       <h3 class="panel-title">Notification automation</h3>
-      <p class="control-hint">Configure Home Assistant notification templates from this add-on UI.</p>
+      <p class="control-hint">Notifications trigger 2 hours before each selected subject's shift start time.</p>
       <div class="control-group">
         <label><input id="notifEnabled" type="checkbox"> Enabled</label>
       </div>
       <div class="control-group">
-        <label for="notifSubject">Subject name</label>
-        <input id="notifSubject" type="text" maxlength="120" placeholder="Nathan">
+        <label>Subjects to notify</label>
+        <div id="notifSubjectPills" class="subject-pills"></div>
       </div>
-      <div class="control-group row-inline">
-        <div>
-          <label for="notifService">Notify service</label>
-          <select id="notifService"></select>
-        </div>
-        <button class="btn btn-secondary" id="notifRefreshServices" type="button">Reload</button>
-      </div>
-      <div class="control-group">
-        <label for="notifTime">Notify time</label>
-        <input id="notifTime" type="time">
-      </div>
+      <details class="pairing-popout">
+        <summary>Pair subjects to notify services</summary>
+        <div id="notifPairingRows"></div>
+        <button class="btn btn-secondary" id="notifAddPairing" type="button">Add pair</button>
+      </details>
       <div class="control-group">
         <label>Weekdays</label>
         <div class="days-grid" id="notifWeekdays"></div>
@@ -275,10 +269,7 @@
     const weekdays = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
     const weekdaysRoot = q("#notifWeekdays", wrapper);
     weekdaysRoot.innerHTML = weekdays
-      .map(
-        (day) =>
-          `<label><input type="checkbox" data-day="${day}"> ${day.toUpperCase()}</label>`
-      )
+      .map((day) => `<label><input type="checkbox" data-day="${day}"> ${day.toUpperCase()}</label>`)
       .join("");
   }
 
@@ -287,6 +278,71 @@
     if (!status) return;
     status.textContent = message || "";
     status.style.color = isError ? "#a11" : "var(--muted)";
+  }
+
+  function getPairingRows() {
+    return qa(".pairing-row", q("#notifPairingRows"));
+  }
+
+  function addPairingRow(subject = "", service = "", subjects = [], services = []) {
+    const root = q("#notifPairingRows");
+    if (!root) return;
+    const row = document.createElement("div");
+    row.className = "pairing-row";
+    row.innerHTML = `
+      <select class="pair-subject"></select>
+      <select class="pair-service"></select>
+      <button class="btn btn-secondary pair-remove" type="button">✕</button>
+    `;
+    root.appendChild(row);
+
+    const subjectSelect = q(".pair-subject", row);
+    const serviceSelect = q(".pair-service", row);
+
+    subjectSelect.innerHTML = subjects
+      .map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`)
+      .join("");
+    serviceSelect.innerHTML = services
+      .map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`)
+      .join("");
+
+    if (subject) subjectSelect.value = subject;
+    if (service) serviceSelect.value = service;
+    q(".pair-remove", row).addEventListener("click", () => {
+      row.remove();
+      renderSubjectPills();
+    });
+    subjectSelect.addEventListener("change", renderSubjectPills);
+    serviceSelect.addEventListener("change", renderSubjectPills);
+  }
+
+  function collectSubjectServiceMapFromForm() {
+    const map = {};
+    getPairingRows().forEach((row) => {
+      const subject = q(".pair-subject", row)?.value?.trim() || "";
+      const service = q(".pair-service", row)?.value?.trim() || "";
+      if (subject && service) map[subject] = service;
+    });
+    return map;
+  }
+
+  function renderSubjectPills(selected = null) {
+    const pillsRoot = q("#notifSubjectPills");
+    if (!pillsRoot) return;
+    const map = collectSubjectServiceMapFromForm();
+    const subjects = Object.keys(map);
+    const keep = new Set(Array.isArray(selected) ? selected : qa(".subject-pill.active", pillsRoot).map((b) => b.dataset.subject));
+    pillsRoot.innerHTML = "";
+    subjects.forEach((subject) => {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "subject-pill";
+      btn.dataset.subject = subject;
+      btn.textContent = subject;
+      if (keep.has(subject)) btn.classList.add("active");
+      btn.addEventListener("click", () => btn.classList.toggle("active"));
+      pillsRoot.appendChild(btn);
+    });
   }
 
   function getNotificationPayloadFromForm() {
@@ -303,11 +359,13 @@
       (el.dataset.day || "").trim().toLowerCase()
     );
 
+    const subjectServiceMap = collectSubjectServiceMapFromForm();
+    const subjectNames = qa("#notifSubjectPills .subject-pill.active").map((el) => el.dataset.subject).filter((name) => Boolean(subjectServiceMap[name]));
+
     return {
       enabled: Boolean(q("#notifEnabled")?.checked),
-      subject_name: q("#notifSubject")?.value?.trim() || "",
-      notify_service: q("#notifService")?.value?.trim() || "",
-      notify_time: q("#notifTime")?.value || "07:00",
+      subject_names: subjectNames,
+      subject_service_map: subjectServiceMap,
       weekdays,
       title_template: q("#notifTitle")?.value || "",
       message_template: q("#notifMessage")?.value || "",
@@ -317,12 +375,10 @@
     };
   }
 
-  function applyNotificationSettingsToForm(settings) {
+  function applyNotificationSettingsToForm(settings, subjects, services) {
     q("#notifEnabled").checked = Boolean(settings.enabled);
-    q("#notifSubject").value = settings.subject_name || "";
-    q("#notifTime").value = settings.notify_time || "07:00";
     q("#notifTitle").value = settings.title_template || "";
-    q("#notifMessage").value = settings.message_template || "";
+    q("#notifMessage").value = (settings.message_template || "").replace(/Whole Shift:\s*/g, "");
     q("#notifSound").value = settings.sound || "";
     q("#notifImage").value = settings.image_url || "";
     q("#notifExtraData").value = JSON.stringify(settings.extra_data || {}, null, 2);
@@ -331,38 +387,17 @@
     qa("#notifWeekdays input[type='checkbox']").forEach((checkbox) => {
       checkbox.checked = activeDays.has((checkbox.dataset.day || "").toLowerCase());
     });
-  }
 
-  async function loadNotifyServices(selected) {
-    const select = q("#notifService");
-    if (!select) return;
-
-    let services = [];
-    try {
-      const resp = await fetch(apiUrl("/api/ha_notify_services"), { cache: "no-store" });
-      if (resp.ok) {
-        const payload = await resp.json();
-        services = Array.isArray(payload.services) ? payload.services : [];
-      }
-    } catch (err) {
-      console.warn("Failed to load HA notify services", err);
+    const pairings = settings.subject_service_map || {};
+    const root = q("#notifPairingRows");
+    if (root) root.innerHTML = "";
+    const pairs = Object.entries(pairings);
+    if (pairs.length) {
+      pairs.forEach(([subject, service]) => addPairingRow(subject, service, subjects, services));
+    } else {
+      addPairingRow(subjects[0] || "", services[0] || "", subjects, services);
     }
-
-    if (selected && !services.includes(selected)) {
-      services = [selected, ...services];
-    }
-
-    if (!services.length) {
-      services = [selected || "notify.mobile_app_iphone_15_pro"];
-    }
-
-    select.innerHTML = services
-      .map((service) => `<option value="${escapeHtml(service)}">${escapeHtml(service)}</option>`)
-      .join("");
-
-    if (selected) {
-      select.value = selected;
-    }
+    renderSubjectPills(settings.subject_names || []);
   }
 
   async function refreshNotificationPreview() {
@@ -383,19 +418,25 @@
     injectNotificationPanel();
     if (!q("#haNotificationPanel")) return;
 
-    const settingsResp = await fetch(apiUrl("/api/notification_settings"), { cache: "no-store" });
-    if (!settingsResp.ok) {
-      throw new Error(`Failed to load notification settings: ${settingsResp.status}`);
-    }
+    const [settingsResp, servicesResp, subjectsResp] = await Promise.all([
+      fetch(apiUrl("/api/notification_settings"), { cache: "no-store" }),
+      fetch(apiUrl("/api/ha_notify_services"), { cache: "no-store" }),
+      fetch(apiUrl("/api/notification_subjects"), { cache: "no-store" }),
+    ]);
+    if (!settingsResp.ok) throw new Error(`Failed to load notification settings: ${settingsResp.status}`);
+
     const settings = await settingsResp.json();
-    applyNotificationSettingsToForm(settings);
-    await loadNotifyServices(settings.notify_service || "");
+    const servicesPayload = servicesResp.ok ? await servicesResp.json() : { services: [] };
+    const subjectsPayload = subjectsResp.ok ? await subjectsResp.json() : { subjects: [] };
+    const services = Array.isArray(servicesPayload.services) && servicesPayload.services.length ? servicesPayload.services : ["notify.mobile_app_iphone_15_pro"];
+    const subjects = Array.isArray(subjectsPayload.subjects) ? subjectsPayload.subjects : [];
+
+    applyNotificationSettingsToForm(settings, subjects, services);
     await refreshNotificationPreview();
 
-    q("#notifRefreshServices")?.addEventListener("click", async () => {
-      const selected = q("#notifService")?.value || "";
-      await loadNotifyServices(selected);
-      setNotificationStatus("Notify services refreshed.");
+    q("#notifAddPairing")?.addEventListener("click", () => {
+      addPairingRow(subjects[0] || "", services[0] || "", subjects, services);
+      renderSubjectPills();
     });
 
     q("#notifPreview")?.addEventListener("click", async () => {
@@ -428,21 +469,18 @@
 
     q("#notifTest")?.addEventListener("click", async () => {
       try {
-        const resp = await fetch(apiUrl("/api/test_notification"), {
-          method: "POST",
-        });
+        const resp = await fetch(apiUrl("/api/test_notification"), { method: "POST" });
         if (!resp.ok) {
           const text = await resp.text();
           throw new Error(text || `Test failed: ${resp.status}`);
         }
         const payload = await resp.json();
-        setNotificationStatus(`Test sent via ${payload.sent_via || "notify"}.`);
+        setNotificationStatus(`Test sent (${payload.count || 0}).`);
       } catch (err) {
         setNotificationStatus(err.message || "Test failed", true);
       }
     });
   }
-
 
   function wireDeleteButtons() {
     document.addEventListener("click", async (event) => {

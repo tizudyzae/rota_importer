@@ -223,9 +223,10 @@
     wrapper.id = "haNotificationPanel";
     wrapper.innerHTML = `
       <h3 class="panel-title">Notification automation</h3>
-      <p class="control-hint">Notifications trigger 2 hours before each selected subject's shift start time.</p>
+      <p class="control-hint">Notifications trigger 2 hours before each selected subject's shift start time. Optional handover notices can also trigger 2 hours before shift end.</p>
       <div class="control-group">
         <label><input id="notifEnabled" type="checkbox"> Enabled</label>
+        <label><input id="notifBeforeEndEnabled" type="checkbox"> Add handover alert (2 hours before shift end)</label>
       </div>
       <div class="control-group">
         <label>Subjects to notify</label>
@@ -383,6 +384,7 @@
 
     return {
       enabled: Boolean(q("#notifEnabled")?.checked),
+      notify_before_end_enabled: Boolean(q("#notifBeforeEndEnabled")?.checked),
       subject_names: subjectNames,
       subject_service_map: subjectServiceMap,
       subject_critical_map: pairingMaps.subjectCriticalMap,
@@ -397,6 +399,7 @@
 
   function applyNotificationSettingsToForm(settings, subjects, services) {
     q("#notifEnabled").checked = Boolean(settings.enabled);
+    q("#notifBeforeEndEnabled").checked = Boolean(settings.notify_before_end_enabled);
     q("#notifTitle").value = settings.title_template || "";
     q("#notifMessage").value = (settings.message_template || "").replace(/Whole Shift:\s*/g, "");
     q("#notifSound").value = settings.sound || "";

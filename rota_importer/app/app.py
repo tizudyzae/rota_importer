@@ -867,27 +867,34 @@ def get_subject_shift_and_coworkers(subject_name: str, today: str) -> dict:
             (upload_id, today, subject_name, end_time, start_time),
         ).fetchall()
 
-    coworkers_list = []
+    subject_end_minutes = hhmm_to_minutes(end_time)
+    closing_coworkers = []
+    mid_coworkers = []
+
     for row in rows:
         employee = clean_cell(row["employee"])
         coworker_start = clean_cell(row["start_time"])
         coworker_end = clean_cell(row["end_time"])
-        if not employee:
+        coworker_start_minutes = hhmm_to_minutes(coworker_start)
+        coworker_end_minutes = hhmm_to_minutes(coworker_end)
+        if not employee or coworker_end_minutes is None:
             continue
 
-        start_label = f"{employee} ({coworker_start})" if coworker_start else employee
+        is_mid_shift = subject_end_minutes is not None and coworker_end_minutes < subject_end_minutes
+        if is_mid_shift:
+            coworker_label = f"{employee} until {coworker_end}"
+            sort_key = (coworker_end_minutes, coworker_start_minutes or -1, employee.lower())
+            mid_coworkers.append((sort_key, coworker_label))
+            continue
 
-        if (
-            re.fullmatch(r"\d{2}:\d{2}", coworker_end)
-            and re.fullmatch(r"\d{2}:\d{2}", end_time)
-            and hhmm_to_minutes(coworker_end) is not None
-            and hhmm_to_minutes(end_time) is not None
-            and hhmm_to_minutes(coworker_end) < hhmm_to_minutes(end_time)
-        ):
-            start_label = f"{start_label} until {coworker_end}"
+        coworker_label = f"{employee} ({coworker_start})" if coworker_start else employee
+        sort_key = (coworker_end_minutes, coworker_start_minutes or -1, employee.lower())
+        closing_coworkers.append((sort_key, coworker_label))
 
-        coworkers_list.append(start_label)
+    closing_coworkers.sort(key=lambda item: item[0])
+    mid_coworkers.sort(key=lambda item: item[0])
 
+    coworkers_list = [label for _, label in closing_coworkers + mid_coworkers]
     coworkers = ", ".join(coworkers_list) if coworkers_list else "Nobody found"
 
     return {
@@ -946,11 +953,22 @@ def build_shift_end_message(end_time: str, team_snapshot: dict) -> str:
 
     if not next_people_text:
         if next_day_openers:
-            openers_text = join_human_names(next_day_openers)
-            opening_team_text = join_human_names(next_day_opening_team)
-            if opening_team_text:
-                return f"After {end_time}, the next opener is {openers_text}, working with {opening_team_text}."
-            return f"After {end_time}, the next opener is {openers_text}."
+            manager_openers = [person for person in next_day_openers if is_management_person(person)]
+            non_manager_openers = [person for person in next_day_openers if person not in manager_openers]
+
+            if manager_openers:
+                openers_text = join_human_names(manager_openers)
+                extra_openers = non_manager_openers
+            else:
+                openers_text = join_human_names(next_day_openers)
+                extra_openers = []
+
+            combined_team = join_human_names(extra_openers + next_day_opening_team)
+
+            opener_verb = "are" if len(manager_openers) != 1 else "is"
+            if combined_team:
+                return f"{openers_text} {opener_verb} opening tomorrow and they are working with {combined_team}."
+            return f"{openers_text} {opener_verb} opening tomorrow."
         return f"No one is scheduled to take over after {end_time}."
 
     management_count = sum(1 for person in next_shift_people if is_management_person(person))
@@ -1220,7 +1238,7 @@ def build_notification_payload_from_settings() -> dict:
             elif rota_context["status"] == "NOT_WORKING":
                 message = "You are not rota'd in today."
             else:
-                message = f"You are working {rota_context['shift']} with: {rota_context['coworkers']}."
+                message = f"You're working today with: {rota_context['coworkers']}."
 
         data_payload = settings["extra_data"] if isinstance(settings["extra_data"], dict) else {}
         data_payload = json.loads(json.dumps(data_payload))

@@ -219,6 +219,7 @@ def init_db() -> None:
             CREATE TABLE IF NOT EXISTS notification_settings (
                 id INTEGER PRIMARY KEY CHECK (id = 1),
                 enabled INTEGER NOT NULL DEFAULT 1,
+                notify_before_end_enabled INTEGER NOT NULL DEFAULT 0,
                 subject_names_json TEXT NOT NULL DEFAULT '[]',
                 subject_service_map_json TEXT NOT NULL DEFAULT '{}',
                 weekdays_json TEXT NOT NULL DEFAULT '["sun","mon","tue","wed","thu","fri","sat"]',
@@ -260,6 +261,10 @@ def init_db() -> None:
         if "subject_names_json" not in columns:
             conn.execute(
                 "ALTER TABLE notification_settings ADD COLUMN subject_names_json TEXT NOT NULL DEFAULT '[]'"
+            )
+        if "notify_before_end_enabled" not in columns:
+            conn.execute(
+                "ALTER TABLE notification_settings ADD COLUMN notify_before_end_enabled INTEGER NOT NULL DEFAULT 0"
             )
         if "subject_service_map_json" not in columns:
             conn.execute(
@@ -337,14 +342,15 @@ def init_db() -> None:
             conn.execute(
                 """
                 INSERT INTO notification_settings (
-                    id, enabled, subject_names_json, subject_service_map_json,
+                    id, enabled, notify_before_end_enabled, subject_names_json, subject_service_map_json,
                     subject_critical_map_json, weekdays_json, title_template, message_template, sound,
                     image_url, extra_data_json, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     1,
                     1,
+                    0,
                     "[]",
                     "{}",
                     "{}",
@@ -728,6 +734,7 @@ def serialize_notification_settings(row: sqlite3.Row) -> dict:
 
     return {
         "enabled": bool(row["enabled"]),
+        "notify_before_end_enabled": bool(row["notify_before_end_enabled"]),
         "subject_names": allowed_subjects,
         "subject_service_map": subject_service_map,
         "subject_critical_map": {
@@ -875,6 +882,115 @@ def get_subject_shift_and_coworkers(subject_name: str, today: str) -> dict:
     }
 
 
+def hhmm_to_minutes(value: str) -> Optional[int]:
+    clean_value = clean_cell(value)
+    if not re.fullmatch(r"\d{2}:\d{2}", clean_value):
+        return None
+    hours, minutes = clean_value.split(":")
+    total = int(hours) * 60 + int(minutes)
+    if total < 0 or total > 1440:
+        return None
+    return total
+
+
+def get_shift_team_snapshot(upload_id: Optional[int], today: str, subject_name: str, shift_end: str) -> dict:
+    if not upload_id or not shift_end:
+        return {
+            "opening": "Unknown",
+            "closing": "Unknown",
+            "takeover": "Nobody scheduled after shift",
+            "team_with_subject": "Nobody found",
+        }
+
+    subject_end_minutes = hhmm_to_minutes(shift_end)
+    if subject_end_minutes is None:
+        return {
+            "opening": "Unknown",
+            "closing": "Unknown",
+            "takeover": "Unknown",
+            "team_with_subject": "Nobody found",
+        }
+
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT employee, start_time, end_time
+            FROM shifts
+            WHERE upload_id = ?
+              AND shift_date = ?
+              AND TRIM(COALESCE(start_time, '')) != ''
+              AND TRIM(COALESCE(end_time, '')) != ''
+            ORDER BY start_time, employee
+            """,
+            (upload_id, today),
+        ).fetchall()
+
+    shift_rows = []
+    for row in rows:
+        employee = clean_cell(row["employee"])
+        start_time = clean_cell(row["start_time"])
+        end_time = clean_cell(row["end_time"])
+        start_minutes = hhmm_to_minutes(start_time)
+        end_minutes = hhmm_to_minutes(end_time)
+        if not employee or start_minutes is None or end_minutes is None:
+            continue
+        shift_rows.append(
+            {
+                "employee": employee,
+                "start_time": start_time,
+                "end_time": end_time,
+                "start_minutes": start_minutes,
+                "end_minutes": end_minutes,
+            }
+        )
+
+    if not shift_rows:
+        return {
+            "opening": "Unknown",
+            "closing": "Unknown",
+            "takeover": "Nobody scheduled after shift",
+            "team_with_subject": "Nobody found",
+        }
+
+    earliest_start = min(item["start_minutes"] for item in shift_rows)
+    latest_end = max(item["end_minutes"] for item in shift_rows)
+
+    opening = ", ".join(
+        sorted(item["employee"] for item in shift_rows if item["start_minutes"] == earliest_start)
+    ) or "Unknown"
+    closing = ", ".join(
+        sorted(item["employee"] for item in shift_rows if item["end_minutes"] == latest_end)
+    ) or "Unknown"
+
+    takeover_rows = [
+        item
+        for item in shift_rows
+        if item["employee"] != subject_name and item["start_minutes"] >= subject_end_minutes
+    ]
+    if takeover_rows:
+        earliest_takeover = min(item["start_minutes"] for item in takeover_rows)
+        takeover_people = sorted(item["employee"] for item in takeover_rows if item["start_minutes"] == earliest_takeover)
+        takeover_time = next((item["start_time"] for item in takeover_rows if item["start_minutes"] == earliest_takeover), "")
+        takeover = f"{', '.join(takeover_people)} at {takeover_time}" if takeover_time else ", ".join(takeover_people)
+    else:
+        takeover = "Nobody scheduled after shift"
+
+    team_with_subject = sorted(
+        {
+            item["employee"]
+            for item in shift_rows
+            if item["employee"] != subject_name and item["start_minutes"] < subject_end_minutes and item["end_minutes"] > subject_end_minutes
+        }
+    )
+
+    return {
+        "opening": opening,
+        "closing": closing,
+        "takeover": takeover,
+        "team_with_subject": ", ".join(team_with_subject) if team_with_subject else "Nobody found",
+    }
+
+
 def build_notification_payload_from_settings() -> dict:
     settings_row = get_notification_settings_row()
     settings = serialize_notification_settings(settings_row)
@@ -894,6 +1010,8 @@ def build_notification_payload_from_settings() -> dict:
             "status": rota_context["status"],
             "today": rota_context["today"],
             "shift": rota_context["shift"],
+            "start_time": rota_context.get("start_time") or "",
+            "end_time": rota_context.get("end_time") or "",
             "coworkers": rota_context["coworkers"],
             "upload_id": rota_context["upload_id"] or "",
         }
@@ -947,21 +1065,72 @@ def build_notification_payload_from_settings() -> dict:
             shift_start = datetime.strptime(f"{today} {start_time}", "%Y-%m-%d %H:%M")
             trigger_at = (shift_start - timedelta(hours=2)).isoformat(timespec="minutes")
 
+        base_notification = {
+            "subject_name": subject_name,
+            "notify_service": notify_service,
+            "title": title,
+            "message": message,
+            "data": data_payload,
+            "context": context,
+            "trigger_at": trigger_at,
+            "critical": is_critical,
+            "notification_kind": "shift_start",
+        }
+        notifications.append(base_notification)
+
+        if not settings.get("notify_before_end_enabled"):
+            continue
+
+        end_time = clean_cell(rota_context.get("end_time"))
+        if not re.fullmatch(r"\d{2}:\d{2}", end_time):
+            parsed_range = TIME_RANGE_RE.search(clean_cell(rota_context.get("shift")))
+            if parsed_range:
+                end_time = parsed_range.group(2)
+
+        if not re.fullmatch(r"\d{2}:\d{2}", end_time):
+            continue
+
+        shift_end = datetime.strptime(f"{today} {end_time}", "%Y-%m-%d %H:%M")
+        team_snapshot = get_shift_team_snapshot(
+            rota_context.get("upload_id"),
+            today,
+            subject_name,
+            end_time,
+        )
+
+        end_context = {
+            **context,
+            "opening": team_snapshot["opening"],
+            "closing": team_snapshot["closing"],
+            "takeover": team_snapshot["takeover"],
+            "team_with_subject": team_snapshot["team_with_subject"],
+        }
+
+        end_message = (
+            f"{subject_name} ends at {end_time}. "
+            f"Opening: {team_snapshot['opening']}. "
+            f"Closing: {team_snapshot['closing']}. "
+            f"Takeover: {team_snapshot['takeover']}. "
+            f"Working with them at handover: {team_snapshot['team_with_subject']}."
+        )
+
         notifications.append(
             {
                 "subject_name": subject_name,
                 "notify_service": notify_service,
-                "title": title,
-                "message": message,
-                "data": data_payload,
-                "context": context,
-                "trigger_at": trigger_at,
+                "title": f"Handover check for {subject_name}",
+                "message": end_message,
+                "data": json.loads(json.dumps(data_payload)),
+                "context": end_context,
+                "trigger_at": (shift_end - timedelta(hours=2)).isoformat(timespec="minutes"),
                 "critical": is_critical,
+                "notification_kind": "shift_end",
             }
         )
 
     return {
         "enabled": settings["enabled"],
+        "notify_before_end_enabled": settings.get("notify_before_end_enabled", False),
         "weekdays": settings["weekdays"],
         "notifications": notifications,
     }
@@ -1362,6 +1531,7 @@ async def api_put_notification_settings(request: Request):
         raise HTTPException(status_code=400, detail="Invalid JSON payload") from exc
 
     enabled = sanitize_bool(body.get("enabled", True), default=True)
+    notify_before_end_enabled = sanitize_bool(body.get("notify_before_end_enabled", False), default=False)
     subject_service_map_raw = body.get("subject_service_map")
     subject_service_map_json = sanitize_subject_service_map(subject_service_map_raw)
     subject_service_map = parse_json_object(subject_service_map_json, {})
@@ -1400,6 +1570,7 @@ async def api_put_notification_settings(request: Request):
             """
             UPDATE notification_settings
             SET enabled = ?,
+                notify_before_end_enabled = ?,
                 subject_names_json = ?,
                 subject_service_map_json = ?,
                 subject_critical_map_json = ?,
@@ -1414,6 +1585,7 @@ async def api_put_notification_settings(request: Request):
             """,
             (
                 enabled,
+                notify_before_end_enabled,
                 subject_names_json,
                 subject_service_map_json,
                 subject_critical_map_json,

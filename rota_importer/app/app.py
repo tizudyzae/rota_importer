@@ -115,6 +115,20 @@ def sanitize_subject_service_map(value: Any) -> str:
     return json.dumps(cleaned)
 
 
+def sanitize_subject_critical_map(value: Any) -> str:
+    if not isinstance(value, dict):
+        return "{}"
+
+    cleaned: dict[str, int] = {}
+    for key, raw_enabled in value.items():
+        subject = sanitize_text(key, max_len=120, default="")
+        if not subject:
+            continue
+        cleaned[subject] = sanitize_bool(raw_enabled, default=False)
+
+    return json.dumps(cleaned)
+
+
 def sanitize_weekdays(value: Any) -> str:
     if not isinstance(value, list):
         return json.dumps(DAY_ORDER)
@@ -225,7 +239,19 @@ def init_db() -> None:
             )
             """
         )
-
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS notification_debug_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_type TEXT NOT NULL,
+                subject_name TEXT NOT NULL,
+                notify_service TEXT NOT NULL,
+                trigger_at TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                details_json TEXT NOT NULL DEFAULT '{}'
+            )
+            """
+        )
 
         columns = {
             row["name"]
@@ -238,6 +264,10 @@ def init_db() -> None:
         if "subject_service_map_json" not in columns:
             conn.execute(
                 "ALTER TABLE notification_settings ADD COLUMN subject_service_map_json TEXT NOT NULL DEFAULT '{}'"
+            )
+        if "subject_critical_map_json" not in columns:
+            conn.execute(
+                "ALTER TABLE notification_settings ADD COLUMN subject_critical_map_json TEXT NOT NULL DEFAULT '{}'"
             )
 
         if "subject_name" in columns and "notify_service" in columns:
@@ -308,14 +338,15 @@ def init_db() -> None:
                 """
                 INSERT INTO notification_settings (
                     id, enabled, subject_names_json, subject_service_map_json,
-                    weekdays_json, title_template, message_template, sound,
+                    subject_critical_map_json, weekdays_json, title_template, message_template, sound,
                     image_url, extra_data_json, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     1,
                     1,
                     "[]",
+                    "{}",
                     "{}",
                     json.dumps(DAY_ORDER),
                     "Today's rota for {{ subject_name }}",
@@ -686,6 +717,7 @@ def get_notification_settings_row() -> sqlite3.Row:
 
 def serialize_notification_settings(row: sqlite3.Row) -> dict:
     subject_service_map = parse_json_object(row["subject_service_map_json"], {})
+    subject_critical_map = parse_json_object(row["subject_critical_map_json"], {})
     subject_names = parse_json_list(row["subject_names_json"], [])
 
     allowed_subjects = []
@@ -698,6 +730,10 @@ def serialize_notification_settings(row: sqlite3.Row) -> dict:
         "enabled": bool(row["enabled"]),
         "subject_names": allowed_subjects,
         "subject_service_map": subject_service_map,
+        "subject_critical_map": {
+            subject: bool(sanitize_bool(subject_critical_map.get(subject), default=False))
+            for subject in subject_service_map
+        },
         "weekdays": parse_json_list(row["weekdays_json"], DAY_ORDER.copy()),
         "title_template": row["title_template"] or "",
         "message_template": row["message_template"] or "",
@@ -850,6 +886,7 @@ def build_notification_payload_from_settings() -> dict:
         notify_service = clean_cell(settings["subject_service_map"].get(subject_name))
         if not notify_service:
             continue
+        is_critical = bool(sanitize_bool(settings.get("subject_critical_map", {}).get(subject_name), default=False))
 
         rota_context = get_subject_shift_and_coworkers(subject_name, today)
         context = {
@@ -881,7 +918,7 @@ def build_notification_payload_from_settings() -> dict:
         data_payload = settings["extra_data"] if isinstance(settings["extra_data"], dict) else {}
         data_payload = json.loads(json.dumps(data_payload))
 
-        if settings["sound"]:
+        if settings["sound"] or is_critical:
             push = data_payload.get("push", {})
             sound_payload = push.get("sound", {})
             if not isinstance(push, dict):
@@ -889,7 +926,10 @@ def build_notification_payload_from_settings() -> dict:
             if not isinstance(sound_payload, dict):
                 sound_payload = {}
 
-            sound_payload["name"] = settings["sound"]
+            sound_payload["name"] = settings["sound"] or "default"
+            if is_critical:
+                sound_payload["critical"] = 1
+                sound_payload["volume"] = 1.0
             push["sound"] = sound_payload
             data_payload["push"] = push
 
@@ -916,6 +956,7 @@ def build_notification_payload_from_settings() -> dict:
                 "data": data_payload,
                 "context": context,
                 "trigger_at": trigger_at,
+                "critical": is_critical,
             }
         )
 
@@ -981,6 +1022,35 @@ def record_dispatched(dispatch_key: str) -> None:
         conn.commit()
 
 
+def add_notification_debug_log(event_type: str, item: dict, details: Optional[dict] = None) -> None:
+    details_json = details if isinstance(details, dict) else {}
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT INTO notification_debug_log (
+                event_type,
+                subject_name,
+                notify_service,
+                trigger_at,
+                created_at,
+                details_json
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                sanitize_text(event_type, max_len=40, default="unknown"),
+                clean_cell(item.get("subject_name")),
+                clean_cell(item.get("notify_service")),
+                clean_cell(item.get("trigger_at")),
+                now_iso(),
+                json.dumps(details_json),
+            ),
+        )
+        conn.execute(
+            "DELETE FROM notification_debug_log WHERE id NOT IN (SELECT id FROM notification_debug_log ORDER BY id DESC LIMIT 250)"
+        )
+        conn.commit()
+
+
 def dispatch_notification(item: dict) -> None:
     notify_service = item["notify_service"]
     if "." not in notify_service:
@@ -997,6 +1067,17 @@ def dispatch_notification(item: dict) -> None:
         "POST",
         f"/services/{domain}/{service}",
         service_payload,
+    )
+
+    add_notification_debug_log(
+        "attempt",
+        item,
+        {
+            "status_code": status_code,
+            "response": response_payload,
+            "title": item.get("title", ""),
+            "message": item.get("message", ""),
+        },
     )
 
     if status_code >= 400:
@@ -1025,10 +1106,12 @@ def run_due_notifications() -> dict:
     sent_via = []
     for item in payload.get("notifications") or []:
         if not should_dispatch_now(item, now):
+            add_notification_debug_log("skipped_not_due", item)
             continue
 
         dispatch_key = make_dispatch_key(item)
         if not dispatch_key or was_dispatched(dispatch_key):
+            add_notification_debug_log("skipped_already_sent", item, {"dispatch_key": dispatch_key})
             continue
 
         dispatch_notification(item)
@@ -1290,6 +1373,10 @@ async def api_put_notification_settings(request: Request):
     subject_names = parse_json_list(subject_names_json, [])
     subject_names = [name for name in subject_names if name in subject_service_map]
     subject_names_json = json.dumps(subject_names)
+    subject_critical_map_json = sanitize_subject_critical_map(body.get("subject_critical_map"))
+    subject_critical_map = parse_json_object(subject_critical_map_json, {})
+    subject_critical_map = {name: sanitize_bool(subject_critical_map.get(name), default=False) for name in subject_service_map}
+    subject_critical_map_json = json.dumps(subject_critical_map)
     weekdays_json = sanitize_weekdays(body.get("weekdays"))
     title_template = sanitize_text(
         body.get("title_template"),
@@ -1315,6 +1402,7 @@ async def api_put_notification_settings(request: Request):
             SET enabled = ?,
                 subject_names_json = ?,
                 subject_service_map_json = ?,
+                subject_critical_map_json = ?,
                 weekdays_json = ?,
                 title_template = ?,
                 message_template = ?,
@@ -1328,6 +1416,7 @@ async def api_put_notification_settings(request: Request):
                 enabled,
                 subject_names_json,
                 subject_service_map_json,
+                subject_critical_map_json,
                 weekdays_json,
                 title_template,
                 message_template,
@@ -1373,6 +1462,35 @@ def api_test_notification():
             "count": len(sent_via),
         }
     )
+
+
+@app.get("/api/notification_debug_log")
+def api_notification_debug_log():
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT id, event_type, subject_name, notify_service, trigger_at, created_at, details_json
+            FROM notification_debug_log
+            ORDER BY id DESC
+            LIMIT 100
+            """
+        ).fetchall()
+
+    events = []
+    for row in rows:
+        events.append(
+            {
+                "id": row["id"],
+                "event_type": row["event_type"],
+                "subject_name": row["subject_name"],
+                "notify_service": row["notify_service"],
+                "trigger_at": row["trigger_at"],
+                "created_at": row["created_at"],
+                "details": parse_json_object(row["details_json"], {}),
+            }
+        )
+
+    return JSONResponse({"events": events})
 
 
 @app.get("/api/notification_subjects")

@@ -203,7 +203,11 @@
       .subject-pill{border:1px solid var(--border);border-radius:999px;padding:6px 12px;background:#fff;cursor:pointer;font-size:12px}
       .subject-pill.active{background:var(--accent);color:#fff;border-color:var(--accent)}
       .pairing-popout{border:1px solid var(--border);border-radius:10px;padding:8px;background:var(--surface-soft)}
-      .pairing-row{display:grid;grid-template-columns:1fr 1fr auto;gap:6px;align-items:center;margin-bottom:6px}
+      .pairing-row{display:grid;grid-template-columns:1fr 1fr auto auto;gap:6px;align-items:center;margin-bottom:6px}
+      .pair-critical{display:flex;align-items:center;gap:4px;font-size:11px;white-space:nowrap}
+      .ha-debug-log{background:#fff;border:1px solid var(--border);border-radius:10px;padding:10px;font-size:12px;max-height:220px;overflow:auto}
+      .ha-debug-log-item{padding:6px 0;border-bottom:1px solid var(--border)}
+      .ha-debug-log-item:last-child{border-bottom:none}
     `;
     document.head.appendChild(style);
   }
@@ -263,6 +267,11 @@
       </div>
       <p class="ha-notification-status" id="notifStatus"></p>
       <div class="ha-preview" id="notifPreviewOutput" aria-live="polite"></div>
+      <div class="control-group">
+        <label>Dispatch debug log</label>
+        <button class="btn btn-secondary" id="notifRefreshDebug" type="button">Refresh debug log</button>
+        <div class="ha-debug-log" id="notifDebugLog" aria-live="polite"></div>
+      </div>
     `;
     panel.appendChild(wrapper);
 
@@ -284,7 +293,7 @@
     return qa(".pairing-row", q("#notifPairingRows"));
   }
 
-  function addPairingRow(subject = "", service = "", subjects = [], services = []) {
+  function addPairingRow(subject = "", service = "", critical = false, subjects = [], services = []) {
     const root = q("#notifPairingRows");
     if (!root) return;
     const row = document.createElement("div");
@@ -292,12 +301,14 @@
     row.innerHTML = `
       <select class="pair-subject"></select>
       <select class="pair-service"></select>
+      <label class="pair-critical"><input type="checkbox" class="pair-critical-input"> Critical</label>
       <button class="btn btn-secondary pair-remove" type="button">✕</button>
     `;
     root.appendChild(row);
 
     const subjectSelect = q(".pair-subject", row);
     const serviceSelect = q(".pair-service", row);
+    const criticalInput = q(".pair-critical-input", row);
 
     subjectSelect.innerHTML = subjects.length
       ? subjects.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join("")
@@ -308,28 +319,35 @@
 
     if (subject) subjectSelect.value = subject;
     if (service) serviceSelect.value = service;
+    if (criticalInput) criticalInput.checked = Boolean(critical);
     q(".pair-remove", row).addEventListener("click", () => {
       row.remove();
       renderSubjectPills();
     });
     subjectSelect.addEventListener("change", renderSubjectPills);
     serviceSelect.addEventListener("change", renderSubjectPills);
+    criticalInput?.addEventListener("change", renderSubjectPills);
   }
 
-  function collectSubjectServiceMapFromForm() {
-    const map = {};
+  function collectPairingMapsFromForm() {
+    const subjectServiceMap = {};
+    const subjectCriticalMap = {};
     getPairingRows().forEach((row) => {
       const subject = q(".pair-subject", row)?.value?.trim() || "";
       const service = q(".pair-service", row)?.value?.trim() || "";
-      if (subject && service) map[subject] = service;
+      const critical = Boolean(q(".pair-critical-input", row)?.checked);
+      if (subject && service) {
+        subjectServiceMap[subject] = service;
+        subjectCriticalMap[subject] = critical;
+      }
     });
-    return map;
+    return { subjectServiceMap, subjectCriticalMap };
   }
 
   function renderSubjectPills(selected = null) {
     const pillsRoot = q("#notifSubjectPills");
     if (!pillsRoot) return;
-    const map = collectSubjectServiceMapFromForm();
+    const map = collectPairingMapsFromForm().subjectServiceMap;
     const subjects = Object.keys(map);
     const keep = new Set(Array.isArray(selected) ? selected : qa(".subject-pill.active", pillsRoot).map((b) => b.dataset.subject));
     pillsRoot.innerHTML = "";
@@ -359,13 +377,15 @@
       (el.dataset.day || "").trim().toLowerCase()
     );
 
-    const subjectServiceMap = collectSubjectServiceMapFromForm();
+    const pairingMaps = collectPairingMapsFromForm();
+    const subjectServiceMap = pairingMaps.subjectServiceMap;
     const subjectNames = qa("#notifSubjectPills .subject-pill.active").map((el) => el.dataset.subject).filter((name) => Boolean(subjectServiceMap[name]));
 
     return {
       enabled: Boolean(q("#notifEnabled")?.checked),
       subject_names: subjectNames,
       subject_service_map: subjectServiceMap,
+      subject_critical_map: pairingMaps.subjectCriticalMap,
       weekdays,
       title_template: q("#notifTitle")?.value || "",
       message_template: q("#notifMessage")?.value || "",
@@ -389,13 +409,14 @@
     });
 
     const pairings = settings.subject_service_map || {};
+    const criticalMap = settings.subject_critical_map || {};
     const root = q("#notifPairingRows");
     if (root) root.innerHTML = "";
     const pairs = Object.entries(pairings);
     if (pairs.length) {
-      pairs.forEach(([subject, service]) => addPairingRow(subject, service, subjects, services));
+      pairs.forEach(([subject, service]) => addPairingRow(subject, service, Boolean(criticalMap[subject]), subjects, services));
     } else {
-      addPairingRow(subjects[0] || "", services[0] || "", subjects, services);
+      addPairingRow(subjects[0] || "", services[0] || "", false, subjects, services);
     }
     renderSubjectPills(settings.subject_names || []);
   }
@@ -412,6 +433,28 @@
 
     const payload = await resp.json();
     previewRoot.textContent = JSON.stringify(payload, null, 2);
+  }
+
+  async function refreshNotificationDebugLog() {
+    const root = q("#notifDebugLog");
+    if (!root) return;
+
+    const resp = await fetch(apiUrl("/api/notification_debug_log"), { cache: "no-store" });
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(text || `Debug log failed: ${resp.status}`);
+    }
+
+    const payload = await resp.json();
+    const events = Array.isArray(payload.events) ? payload.events : [];
+    if (!events.length) {
+      root.textContent = "No debug events yet.";
+      return;
+    }
+
+    root.innerHTML = events
+      .map((item) => `<div class="ha-debug-log-item"><strong>${escapeHtml(item.event_type || "event")}</strong> · ${escapeHtml(item.subject_name || "")} · ${escapeHtml(item.notify_service || "")}<br><small>${escapeHtml(item.created_at || "")} (trigger ${escapeHtml(item.trigger_at || "n/a")})</small></div>`)
+      .join("");
   }
 
   async function initNotificationPanel() {
@@ -433,9 +476,10 @@
 
     applyNotificationSettingsToForm(settings, subjects, services);
     await refreshNotificationPreview();
+    await refreshNotificationDebugLog();
 
     q("#notifAddPairing")?.addEventListener("click", () => {
-      addPairingRow(subjects[0] || "", services[0] || "", subjects, services);
+      addPairingRow(subjects[0] || "", services[0] || "", false, subjects, services);
       renderSubjectPills();
     });
 
@@ -445,6 +489,15 @@
         setNotificationStatus("Preview updated.");
       } catch (err) {
         setNotificationStatus(err.message || "Preview failed", true);
+      }
+    });
+
+    q("#notifRefreshDebug")?.addEventListener("click", async () => {
+      try {
+        await refreshNotificationDebugLog();
+        setNotificationStatus("Debug log updated.");
+      } catch (err) {
+        setNotificationStatus(err.message || "Debug log failed", true);
       }
     });
 
@@ -461,6 +514,7 @@
           throw new Error(text || `Save failed: ${resp.status}`);
         }
         await refreshNotificationPreview();
+        await refreshNotificationDebugLog();
         setNotificationStatus("Notification settings saved.");
       } catch (err) {
         setNotificationStatus(err.message || "Save failed", true);
@@ -475,6 +529,7 @@
           throw new Error(text || `Test failed: ${resp.status}`);
         }
         const payload = await resp.json();
+        await refreshNotificationDebugLog();
         setNotificationStatus(`Test sent (${payload.count || 0}).`);
       } catch (err) {
         setNotificationStatus(err.message || "Test failed", true);

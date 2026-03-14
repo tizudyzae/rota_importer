@@ -967,6 +967,25 @@ def format_people_for_handover(people: List[dict], include_non_management_start:
 
 
 def build_shift_end_message(end_time: str, team_snapshot: dict) -> str:
+    handover_managers = (
+        team_snapshot.get("handover_managers_details") if isinstance(team_snapshot.get("handover_managers_details"), list) else []
+    )
+    handover_team = (
+        team_snapshot.get("handover_team_details") if isinstance(team_snapshot.get("handover_team_details"), list) else []
+    )
+
+    handover_managers_text = format_people_for_handover(handover_managers, include_non_management_start=False)
+    handover_team_text = format_people_for_handover(handover_team, include_non_management_start=True)
+
+    if handover_managers_text:
+        manager_verb = "are" if len(handover_managers) > 1 else "is"
+        if handover_team_text:
+            return (
+                f"From {end_time}, {handover_managers_text} {manager_verb} taking over the shift "
+                f"and they are working with {handover_team_text}."
+            )
+        return f"From {end_time}, {handover_managers_text} {manager_verb} taking over the shift."
+
     next_shift_people = (
         team_snapshot.get("next_shift_people_details") if isinstance(team_snapshot.get("next_shift_people_details"), list) else []
     )
@@ -1038,6 +1057,10 @@ def get_shift_team_snapshot(upload_id: Optional[int], today: str, subject_name: 
             "bridge_people_details": [],
             "next_day_openers": [],
             "next_day_opening_team": [],
+            "handover_managers": [],
+            "handover_managers_details": [],
+            "handover_team": [],
+            "handover_team_details": [],
         }
 
     subject_end_minutes = hhmm_to_minutes(shift_end)
@@ -1056,6 +1079,10 @@ def get_shift_team_snapshot(upload_id: Optional[int], today: str, subject_name: 
             "bridge_people_details": [],
             "next_day_openers": [],
             "next_day_opening_team": [],
+            "handover_managers": [],
+            "handover_managers_details": [],
+            "handover_team": [],
+            "handover_team_details": [],
         }
 
     with get_conn() as conn:
@@ -1252,6 +1279,50 @@ def get_shift_team_snapshot(upload_id: Optional[int], today: str, subject_name: 
         bridge_people = []
         bridge_people_details = []
 
+    handover_manager_rows = sorted(
+        [
+            item
+            for item in shift_rows
+            if item["employee"] != subject_name
+            and is_management_person(item["employee"])
+            and item["start_minutes"] <= subject_end_minutes
+            and item["end_minutes"] > subject_end_minutes
+        ],
+        key=lambda item: (item["start_minutes"], item["employee"].lower()),
+    )
+    handover_managers = [item["employee"] for item in handover_manager_rows]
+    handover_managers_details = [
+        {"employee": item["employee"], "start_time": item["start_time"]} for item in handover_manager_rows
+    ]
+
+    next_manager_start_minutes = min(
+        (
+            item["start_minutes"]
+            for item in shift_rows
+            if item["employee"] != subject_name
+            and is_management_person(item["employee"])
+            and item["start_minutes"] > subject_end_minutes
+        ),
+        default=None,
+    )
+
+    handover_cutoff = next_manager_start_minutes if next_manager_start_minutes is not None else float("inf")
+    handover_team_rows = sorted(
+        [
+            item
+            for item in shift_rows
+            if item["employee"] != subject_name
+            and item["employee"] not in handover_managers
+            and item["end_minutes"] > subject_end_minutes
+            and item["start_minutes"] < handover_cutoff
+        ],
+        key=lambda item: (item["start_minutes"], item["employee"].lower()),
+    )
+    handover_team = [item["employee"] for item in handover_team_rows]
+    handover_team_details = [
+        {"employee": item["employee"], "start_time": item["start_time"]} for item in handover_team_rows
+    ]
+
     team_with_subject = sorted(
         {
             item["employee"]
@@ -1274,6 +1345,10 @@ def get_shift_team_snapshot(upload_id: Optional[int], today: str, subject_name: 
         "bridge_people_details": bridge_people_details,
         "next_day_openers": next_day_openers,
         "next_day_opening_team": next_day_opening_team,
+        "handover_managers": handover_managers,
+        "handover_managers_details": handover_managers_details,
+        "handover_team": handover_team,
+        "handover_team_details": handover_team_details,
     }
 
 

@@ -224,8 +224,8 @@ def init_db() -> None:
                 subject_names_json TEXT NOT NULL DEFAULT '[]',
                 subject_service_map_json TEXT NOT NULL DEFAULT '{}',
                 weekdays_json TEXT NOT NULL DEFAULT '["sun","mon","tue","wed","thu","fri","sat"]',
-                title_template TEXT NOT NULL DEFAULT 'Today''s rota for {{ subject_name }}',
-                message_template TEXT NOT NULL DEFAULT '{{ subject_name }} is working {{ shift }} with: {{ coworkers }}.',
+                title_template TEXT NOT NULL DEFAULT 'Your rota for today',
+                message_template TEXT NOT NULL DEFAULT 'You are working {{ shift }} with: {{ coworkers }}.',
                 sound TEXT NOT NULL DEFAULT '',
                 image_url TEXT NOT NULL DEFAULT '',
                 extra_data_json TEXT NOT NULL DEFAULT '{}',
@@ -356,8 +356,8 @@ def init_db() -> None:
                     "{}",
                     "{}",
                     json.dumps(DAY_ORDER),
-                    "Today's rota for {{ subject_name }}",
-                    "{{ subject_name }} is working {{ shift }} with: {{ coworkers }}.",
+                    "Your rota for today",
+                    "You are working {{ shift }} with: {{ coworkers }}.",
                     "",
                     "",
                     "{}",
@@ -853,7 +853,7 @@ def get_subject_shift_and_coworkers(subject_name: str, today: str) -> dict:
 
         rows = conn.execute(
             """
-            SELECT employee
+            SELECT employee, start_time, end_time
             FROM shifts
             WHERE upload_id = ?
               AND shift_date = ?
@@ -867,7 +867,27 @@ def get_subject_shift_and_coworkers(subject_name: str, today: str) -> dict:
             (upload_id, today, subject_name, end_time, start_time),
         ).fetchall()
 
-    coworkers_list = [clean_cell(row["employee"]) for row in rows if clean_cell(row["employee"])]
+    coworkers_list = []
+    for row in rows:
+        employee = clean_cell(row["employee"])
+        coworker_start = clean_cell(row["start_time"])
+        coworker_end = clean_cell(row["end_time"])
+        if not employee:
+            continue
+
+        start_label = f"{employee} ({coworker_start})" if coworker_start else employee
+
+        if (
+            re.fullmatch(r"\d{2}:\d{2}", coworker_end)
+            and re.fullmatch(r"\d{2}:\d{2}", end_time)
+            and hhmm_to_minutes(coworker_end) is not None
+            and hhmm_to_minutes(end_time) is not None
+            and hhmm_to_minutes(coworker_end) < hhmm_to_minutes(end_time)
+        ):
+            start_label = f"{start_label} until {coworker_end}"
+
+        coworkers_list.append(start_label)
+
     coworkers = ", ".join(coworkers_list) if coworkers_list else "Nobody found"
 
     return {
@@ -919,7 +939,18 @@ def build_shift_end_message(end_time: str, team_snapshot: dict) -> str:
     next_team_text = join_human_names(next_shift_team)
     bridge_text = join_human_names(bridge_people)
 
+    next_day_openers = team_snapshot.get("next_day_openers") if isinstance(team_snapshot.get("next_day_openers"), list) else []
+    next_day_opening_team = (
+        team_snapshot.get("next_day_opening_team") if isinstance(team_snapshot.get("next_day_opening_team"), list) else []
+    )
+
     if not next_people_text:
+        if next_day_openers:
+            openers_text = join_human_names(next_day_openers)
+            opening_team_text = join_human_names(next_day_opening_team)
+            if opening_team_text:
+                return f"After {end_time}, the next opener is {openers_text}, working with {opening_team_text}."
+            return f"After {end_time}, the next opener is {openers_text}."
         return f"No one is scheduled to take over after {end_time}."
 
     management_count = sum(1 for person in next_shift_people if is_management_person(person))
@@ -949,6 +980,8 @@ def get_shift_team_snapshot(upload_id: Optional[int], today: str, subject_name: 
             "next_shift_time": "",
             "next_shift_team": [],
             "bridge_people": [],
+            "next_day_openers": [],
+            "next_day_opening_team": [],
         }
 
     subject_end_minutes = hhmm_to_minutes(shift_end)
@@ -962,6 +995,8 @@ def get_shift_team_snapshot(upload_id: Optional[int], today: str, subject_name: 
             "next_shift_time": "",
             "next_shift_team": [],
             "bridge_people": [],
+            "next_day_openers": [],
+            "next_day_opening_team": [],
         }
 
     with get_conn() as conn:
@@ -1007,7 +1042,72 @@ def get_shift_team_snapshot(upload_id: Optional[int], today: str, subject_name: 
             "next_shift_time": "",
             "next_shift_team": [],
             "bridge_people": [],
+            "next_day_openers": [],
+            "next_day_opening_team": [],
         }
+
+    next_day = (datetime.strptime(today, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+    with get_conn() as conn:
+        next_day_upload_row = conn.execute(
+            """
+            SELECT upload_id
+            FROM shifts
+            WHERE shift_date = ?
+            ORDER BY upload_id DESC
+            LIMIT 1
+            """,
+            (next_day,),
+        ).fetchone()
+
+        next_day_rows = []
+        if next_day_upload_row:
+            next_day_rows = conn.execute(
+                """
+                SELECT employee, start_time, end_time
+                FROM shifts
+                WHERE upload_id = ?
+                  AND shift_date = ?
+                  AND TRIM(COALESCE(start_time, '')) != ''
+                  AND TRIM(COALESCE(end_time, '')) != ''
+                ORDER BY start_time, employee
+                """,
+                (next_day_upload_row["upload_id"], next_day),
+            ).fetchall()
+
+    next_day_shift_rows = []
+    for row in next_day_rows:
+        employee = clean_cell(row["employee"])
+        start_time = clean_cell(row["start_time"])
+        end_time = clean_cell(row["end_time"])
+        start_minutes = hhmm_to_minutes(start_time)
+        end_minutes = hhmm_to_minutes(end_time)
+        if not employee or start_minutes is None or end_minutes is None:
+            continue
+        next_day_shift_rows.append(
+            {
+                "employee": employee,
+                "start_minutes": start_minutes,
+                "end_minutes": end_minutes,
+            }
+        )
+
+    if next_day_shift_rows:
+        earliest_next_day_start = min(item["start_minutes"] for item in next_day_shift_rows)
+        next_day_openers = sorted(
+            item["employee"] for item in next_day_shift_rows if item["start_minutes"] == earliest_next_day_start
+        )
+        next_day_opening_team = sorted(
+            {
+                item["employee"]
+                for item in next_day_shift_rows
+                if item["employee"] not in next_day_openers
+                and item["start_minutes"] <= earliest_next_day_start
+                and item["end_minutes"] > earliest_next_day_start
+            }
+        )
+    else:
+        next_day_openers = []
+        next_day_opening_team = []
 
     earliest_start = min(item["start_minutes"] for item in shift_rows)
     latest_end = max(item["end_minutes"] for item in shift_rows)
@@ -1075,6 +1175,8 @@ def get_shift_team_snapshot(upload_id: Optional[int], today: str, subject_name: 
         "next_shift_time": takeover_time,
         "next_shift_team": takeover_team,
         "bridge_people": bridge_people,
+        "next_day_openers": next_day_openers,
+        "next_day_opening_team": next_day_opening_team,
     }
 
 
@@ -1110,15 +1212,15 @@ def build_notification_payload_from_settings() -> dict:
             message = ""
 
         if not title:
-            title = f"Today's rota for {subject_name}"
+            title = "Your rota for today"
 
         if not message:
             if rota_context["status"] == "NOT_FOUND":
                 message = "No rota uploaded for today."
             elif rota_context["status"] == "NOT_WORKING":
-                message = f"{subject_name} is not rota'd in today."
+                message = "You are not rota'd in today."
             else:
-                message = f"{subject_name} is working {rota_context['shift']} with: {rota_context['coworkers']}."
+                message = f"You are working {rota_context['shift']} with: {rota_context['coworkers']}."
 
         data_payload = settings["extra_data"] if isinstance(settings["extra_data"], dict) else {}
         data_payload = json.loads(json.dumps(data_payload))
@@ -1199,7 +1301,7 @@ def build_notification_payload_from_settings() -> dict:
             {
                 "subject_name": subject_name,
                 "notify_service": notify_service,
-                "title": f"Handover check for {subject_name}",
+                "title": "Handover check for your shift",
                 "message": end_message,
                 "data": json.loads(json.dumps(data_payload)),
                 "context": end_context,
@@ -1632,12 +1734,12 @@ async def api_put_notification_settings(request: Request):
     title_template = sanitize_text(
         body.get("title_template"),
         max_len=500,
-        default="Today's rota for {{ subject_name }}",
+        default="Your rota for today",
     )
     message_template = sanitize_text(
         body.get("message_template"),
         max_len=2000,
-        default="{{ subject_name }} is working {{ shift }} with: {{ coworkers }}.",
+        default="You are working {{ shift }} with: {{ coworkers }}.",
     )
     sound = sanitize_text(body.get("sound"), max_len=120, default="")
     image_url = sanitize_text(body.get("image_url"), max_len=500, default="")

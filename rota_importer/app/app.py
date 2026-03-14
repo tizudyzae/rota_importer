@@ -762,6 +762,19 @@ def render_simple_template(template: str, context: Dict[str, Any]) -> str:
     return output
 
 
+def normalize_subject_working_phrase(message: str, subject_name: str) -> str:
+    text = clean_cell(message)
+    escaped_subject_name = re.escape(clean_cell(subject_name))
+    if not text or not escaped_subject_name:
+        return message
+    return re.sub(
+        rf"^{escaped_subject_name}\s+is\s+working\b",
+        "You are working",
+        message,
+        flags=re.IGNORECASE,
+    )
+
+
 def get_latest_relevant_upload_id(subject_name: str, today: str) -> Optional[int]:
     with get_conn() as conn:
         row = conn.execute(
@@ -937,14 +950,36 @@ def join_human_names(names: List[str]) -> str:
     return f"{', '.join(cleaned[:-1])}, and {cleaned[-1]}"
 
 
-def build_shift_end_message(end_time: str, team_snapshot: dict) -> str:
-    next_shift_people = team_snapshot.get("next_shift_people") if isinstance(team_snapshot.get("next_shift_people"), list) else []
-    next_shift_team = team_snapshot.get("next_shift_team") if isinstance(team_snapshot.get("next_shift_team"), list) else []
-    bridge_people = team_snapshot.get("bridge_people") if isinstance(team_snapshot.get("bridge_people"), list) else []
+def format_people_for_handover(people: List[dict], include_non_management_start: bool = False) -> str:
+    labels = []
+    for person in people:
+        if not isinstance(person, dict):
+            continue
+        name = clean_cell(person.get("employee"))
+        if not name:
+            continue
+        start_time = clean_cell(person.get("start_time"))
+        if include_non_management_start and start_time and not is_management_person(name):
+            labels.append(f"{name} ({start_time})")
+        else:
+            labels.append(name)
+    return join_human_names(labels)
 
-    next_people_text = join_human_names(next_shift_people)
-    next_team_text = join_human_names(next_shift_team)
-    bridge_text = join_human_names(bridge_people)
+
+def build_shift_end_message(end_time: str, team_snapshot: dict) -> str:
+    next_shift_people = (
+        team_snapshot.get("next_shift_people_details") if isinstance(team_snapshot.get("next_shift_people_details"), list) else []
+    )
+    next_shift_team = (
+        team_snapshot.get("next_shift_team_details") if isinstance(team_snapshot.get("next_shift_team_details"), list) else []
+    )
+    bridge_people = (
+        team_snapshot.get("bridge_people_details") if isinstance(team_snapshot.get("bridge_people_details"), list) else []
+    )
+
+    next_people_text = format_people_for_handover(next_shift_people, include_non_management_start=True)
+    next_team_text = format_people_for_handover(next_shift_team, include_non_management_start=True)
+    bridge_text = format_people_for_handover(bridge_people, include_non_management_start=True)
 
     next_day_openers = team_snapshot.get("next_day_openers") if isinstance(team_snapshot.get("next_day_openers"), list) else []
     next_day_opening_team = (
@@ -971,7 +1006,7 @@ def build_shift_end_message(end_time: str, team_snapshot: dict) -> str:
             return f"{openers_text} {opener_verb} opening tomorrow."
         return f"No one is scheduled to take over after {end_time}."
 
-    management_count = sum(1 for person in next_shift_people if is_management_person(person))
+    management_count = sum(1 for person in next_shift_people if is_management_person(person.get("employee")))
     management_label = ""
     if management_count == len(next_shift_people) and management_count > 1:
         management_label = " (both management)"
@@ -995,9 +1030,12 @@ def get_shift_team_snapshot(upload_id: Optional[int], today: str, subject_name: 
             "takeover": "Nobody scheduled after shift",
             "team_with_subject": "Nobody found",
             "next_shift_people": [],
+            "next_shift_people_details": [],
             "next_shift_time": "",
             "next_shift_team": [],
+            "next_shift_team_details": [],
             "bridge_people": [],
+            "bridge_people_details": [],
             "next_day_openers": [],
             "next_day_opening_team": [],
         }
@@ -1010,9 +1048,12 @@ def get_shift_team_snapshot(upload_id: Optional[int], today: str, subject_name: 
             "takeover": "Unknown",
             "team_with_subject": "Nobody found",
             "next_shift_people": [],
+            "next_shift_people_details": [],
             "next_shift_time": "",
             "next_shift_team": [],
+            "next_shift_team_details": [],
             "bridge_people": [],
+            "bridge_people_details": [],
             "next_day_openers": [],
             "next_day_opening_team": [],
         }
@@ -1057,9 +1098,12 @@ def get_shift_team_snapshot(upload_id: Optional[int], today: str, subject_name: 
             "takeover": "Nobody scheduled after shift",
             "team_with_subject": "Nobody found",
             "next_shift_people": [],
+            "next_shift_people_details": [],
             "next_shift_time": "",
             "next_shift_team": [],
+            "next_shift_team_details": [],
             "bridge_people": [],
+            "bridge_people_details": [],
             "next_day_openers": [],
             "next_day_opening_team": [],
         }
@@ -1111,16 +1155,18 @@ def get_shift_team_snapshot(upload_id: Optional[int], today: str, subject_name: 
 
     if next_day_shift_rows:
         earliest_next_day_start = min(item["start_minutes"] for item in next_day_shift_rows)
-        next_day_openers = sorted(
-            item["employee"] for item in next_day_shift_rows if item["start_minutes"] == earliest_next_day_start
-        )
+        next_day_openers = sorted(item["employee"] for item in next_day_shift_rows if item["start_minutes"] == earliest_next_day_start)
+        opening_managers = [item for item in next_day_shift_rows if item["employee"] in next_day_openers and is_management_person(item["employee"])]
+        opening_reference = opening_managers or [item for item in next_day_shift_rows if item["employee"] in next_day_openers]
+        opening_window_start = min(item["start_minutes"] for item in opening_reference)
+        opening_window_end = max(item["end_minutes"] for item in opening_reference)
         next_day_opening_team = sorted(
             {
                 item["employee"]
                 for item in next_day_shift_rows
                 if item["employee"] not in next_day_openers
-                and item["start_minutes"] <= earliest_next_day_start
-                and item["end_minutes"] > earliest_next_day_start
+                and item["start_minutes"] < opening_window_end
+                and item["end_minutes"] > opening_window_start
             }
         )
     else:
@@ -1145,6 +1191,17 @@ def get_shift_team_snapshot(upload_id: Optional[int], today: str, subject_name: 
     if takeover_rows:
         earliest_takeover = min(item["start_minutes"] for item in takeover_rows)
         takeover_people = sorted(item["employee"] for item in takeover_rows if item["start_minutes"] == earliest_takeover)
+        takeover_people_details = sorted(
+            [
+                {
+                    "employee": item["employee"],
+                    "start_time": item["start_time"],
+                }
+                for item in takeover_rows
+                if item["start_minutes"] == earliest_takeover
+            ],
+            key=lambda person: clean_cell(person.get("employee")).lower(),
+        )
         takeover_time = next((item["start_time"] for item in takeover_rows if item["start_minutes"] == earliest_takeover), "")
         takeover = f"{', '.join(takeover_people)} at {takeover_time}" if takeover_time else ", ".join(takeover_people)
 
@@ -1169,12 +1226,31 @@ def get_shift_team_snapshot(upload_id: Optional[int], today: str, subject_name: 
                 and item["end_minutes"] > earliest_takeover
             }
         )
+        takeover_team_details = sorted(
+            [
+                {"employee": item["employee"], "start_time": item["start_time"]}
+                for item in shift_rows
+                if item["employee"] in takeover_team
+            ],
+            key=lambda person: clean_cell(person.get("employee")).lower(),
+        )
+        bridge_people_details = sorted(
+            [
+                {"employee": item["employee"], "start_time": item["start_time"]}
+                for item in shift_rows
+                if item["employee"] in bridge_people
+            ],
+            key=lambda person: clean_cell(person.get("employee")).lower(),
+        )
     else:
         takeover = "Nobody scheduled after shift"
         takeover_people = []
+        takeover_people_details = []
         takeover_time = ""
         takeover_team = []
+        takeover_team_details = []
         bridge_people = []
+        bridge_people_details = []
 
     team_with_subject = sorted(
         {
@@ -1190,9 +1266,12 @@ def get_shift_team_snapshot(upload_id: Optional[int], today: str, subject_name: 
         "takeover": takeover,
         "team_with_subject": ", ".join(team_with_subject) if team_with_subject else "Nobody found",
         "next_shift_people": takeover_people,
+        "next_shift_people_details": takeover_people_details,
         "next_shift_time": takeover_time,
         "next_shift_team": takeover_team,
+        "next_shift_team_details": takeover_team_details,
         "bridge_people": bridge_people,
+        "bridge_people_details": bridge_people_details,
         "next_day_openers": next_day_openers,
         "next_day_opening_team": next_day_opening_team,
     }
@@ -1225,6 +1304,7 @@ def build_notification_payload_from_settings() -> dict:
 
         title = render_simple_template(settings["title_template"], context).strip()
         message = render_simple_template(settings["message_template"], context).strip()
+        message = normalize_subject_working_phrase(message, subject_name)
 
         if rota_context["status"] in {"NOT_FOUND", "NOT_WORKING"}:
             message = ""

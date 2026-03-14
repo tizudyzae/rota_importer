@@ -33,6 +33,7 @@ EMPLOYEE_ID_RE = re.compile(r"\((\d+)\)")
 DATE_HEADER_RE = re.compile(r"^([A-Za-z]{3})\((\d{2})/(\d{2})\)$")
 TIME_RANGE_RE = re.compile(r"(\d{2}:\d{2})\s*-\s*(\d{2}:\d{2})")
 DAY_ORDER = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"]
+MANAGEMENT_NAMES = {"samantha", "elizabeth", "joshua", "laura", "nathan"}
 AUTO_NOTIFY_POLL_SECONDS = 60
 AUTO_NOTIFY_GRACE_MINUTES = 5
 
@@ -893,6 +894,50 @@ def hhmm_to_minutes(value: str) -> Optional[int]:
     return total
 
 
+def is_management_person(name: str) -> bool:
+    normalized = clean_cell(name).lower()
+    return any(target in normalized for target in MANAGEMENT_NAMES)
+
+
+def join_human_names(names: List[str]) -> str:
+    cleaned = [clean_cell(name) for name in names if clean_cell(name)]
+    if not cleaned:
+        return ""
+    if len(cleaned) == 1:
+        return cleaned[0]
+    if len(cleaned) == 2:
+        return f"{cleaned[0]} and {cleaned[1]}"
+    return f"{', '.join(cleaned[:-1])}, and {cleaned[-1]}"
+
+
+def build_shift_end_message(end_time: str, team_snapshot: dict) -> str:
+    next_shift_people = team_snapshot.get("next_shift_people") if isinstance(team_snapshot.get("next_shift_people"), list) else []
+    next_shift_team = team_snapshot.get("next_shift_team") if isinstance(team_snapshot.get("next_shift_team"), list) else []
+    bridge_people = team_snapshot.get("bridge_people") if isinstance(team_snapshot.get("bridge_people"), list) else []
+
+    next_people_text = join_human_names(next_shift_people)
+    next_team_text = join_human_names(next_shift_team)
+    bridge_text = join_human_names(bridge_people)
+
+    if not next_people_text:
+        return f"No one is scheduled to take over after {end_time}."
+
+    management_count = sum(1 for person in next_shift_people if is_management_person(person))
+    management_label = ""
+    if management_count == len(next_shift_people) and management_count > 1:
+        management_label = " (both management)"
+    elif management_count >= 1:
+        management_label = " (management)"
+
+    verb = "take" if len(next_shift_people) > 1 else "takes"
+
+    if bridge_text:
+        return f"From {end_time}, {next_people_text}{management_label} {verb} over, bridged with {bridge_text}."
+    if next_team_text:
+        return f"From {end_time}, {next_people_text}{management_label} {verb} over with {next_team_text}."
+    return f"From {end_time}, {next_people_text}{management_label} {verb} over."
+
+
 def get_shift_team_snapshot(upload_id: Optional[int], today: str, subject_name: str, shift_end: str) -> dict:
     if not upload_id or not shift_end:
         return {
@@ -900,6 +945,10 @@ def get_shift_team_snapshot(upload_id: Optional[int], today: str, subject_name: 
             "closing": "Unknown",
             "takeover": "Nobody scheduled after shift",
             "team_with_subject": "Nobody found",
+            "next_shift_people": [],
+            "next_shift_time": "",
+            "next_shift_team": [],
+            "bridge_people": [],
         }
 
     subject_end_minutes = hhmm_to_minutes(shift_end)
@@ -909,6 +958,10 @@ def get_shift_team_snapshot(upload_id: Optional[int], today: str, subject_name: 
             "closing": "Unknown",
             "takeover": "Unknown",
             "team_with_subject": "Nobody found",
+            "next_shift_people": [],
+            "next_shift_time": "",
+            "next_shift_team": [],
+            "bridge_people": [],
         }
 
     with get_conn() as conn:
@@ -950,6 +1003,10 @@ def get_shift_team_snapshot(upload_id: Optional[int], today: str, subject_name: 
             "closing": "Unknown",
             "takeover": "Nobody scheduled after shift",
             "team_with_subject": "Nobody found",
+            "next_shift_people": [],
+            "next_shift_time": "",
+            "next_shift_team": [],
+            "bridge_people": [],
         }
 
     earliest_start = min(item["start_minutes"] for item in shift_rows)
@@ -972,8 +1029,34 @@ def get_shift_team_snapshot(upload_id: Optional[int], today: str, subject_name: 
         takeover_people = sorted(item["employee"] for item in takeover_rows if item["start_minutes"] == earliest_takeover)
         takeover_time = next((item["start_time"] for item in takeover_rows if item["start_minutes"] == earliest_takeover), "")
         takeover = f"{', '.join(takeover_people)} at {takeover_time}" if takeover_time else ", ".join(takeover_people)
+
+        takeover_team = sorted(
+            {
+                item["employee"]
+                for item in shift_rows
+                if item["employee"] != subject_name
+                and item["employee"] not in takeover_people
+                and item["start_minutes"] <= earliest_takeover
+                and item["end_minutes"] > earliest_takeover
+            }
+        )
+
+        bridge_people = sorted(
+            {
+                item["employee"]
+                for item in shift_rows
+                if item["employee"] != subject_name
+                and item["employee"] not in takeover_people
+                and item["start_minutes"] < earliest_takeover
+                and item["end_minutes"] > earliest_takeover
+            }
+        )
     else:
         takeover = "Nobody scheduled after shift"
+        takeover_people = []
+        takeover_time = ""
+        takeover_team = []
+        bridge_people = []
 
     team_with_subject = sorted(
         {
@@ -988,6 +1071,10 @@ def get_shift_team_snapshot(upload_id: Optional[int], today: str, subject_name: 
         "closing": closing,
         "takeover": takeover,
         "team_with_subject": ", ".join(team_with_subject) if team_with_subject else "Nobody found",
+        "next_shift_people": takeover_people,
+        "next_shift_time": takeover_time,
+        "next_shift_team": takeover_team,
+        "bridge_people": bridge_people,
     }
 
 
@@ -1106,13 +1193,7 @@ def build_notification_payload_from_settings() -> dict:
             "team_with_subject": team_snapshot["team_with_subject"],
         }
 
-        end_message = (
-            f"{subject_name} ends at {end_time}. "
-            f"Opening: {team_snapshot['opening']}. "
-            f"Closing: {team_snapshot['closing']}. "
-            f"Takeover: {team_snapshot['takeover']}. "
-            f"Working with them at handover: {team_snapshot['team_with_subject']}."
-        )
+        end_message = build_shift_end_message(end_time, team_snapshot)
 
         notifications.append(
             {

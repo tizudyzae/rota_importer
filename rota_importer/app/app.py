@@ -4,6 +4,7 @@ import os
 import re
 import shutil
 import sqlite3
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -32,6 +33,11 @@ EMPLOYEE_ID_RE = re.compile(r"\((\d+)\)")
 DATE_HEADER_RE = re.compile(r"^([A-Za-z]{3})\((\d{2})/(\d{2})\)$")
 TIME_RANGE_RE = re.compile(r"(\d{2}:\d{2})\s*-\s*(\d{2}:\d{2})")
 DAY_ORDER = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"]
+AUTO_NOTIFY_POLL_SECONDS = 60
+AUTO_NOTIFY_GRACE_MINUTES = 5
+
+_auto_notify_stop = threading.Event()
+_auto_notify_thread: Optional[threading.Thread] = None
 
 
 def get_conn() -> sqlite3.Connection:
@@ -211,6 +217,14 @@ def init_db() -> None:
             )
             """
         )
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS notification_dispatch_log (
+                dispatch_key TEXT PRIMARY KEY,
+                dispatched_at TEXT NOT NULL
+            )
+            """
+        )
 
 
         columns = {
@@ -321,6 +335,12 @@ def startup() -> None:
     print(f"Using DB path: {DB_PATH}")
     print(f"DB parent exists: {DB_PATH.parent.exists()}")
     init_db()
+    start_auto_notification_worker()
+
+
+@app.on_event("shutdown")
+def shutdown() -> None:
+    stop_auto_notification_worker()
 
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -906,6 +926,150 @@ def build_notification_payload_from_settings() -> dict:
     }
 
 
+def parse_iso_datetime(raw: str) -> Optional[datetime]:
+    text = clean_cell(raw)
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        return None
+
+
+def make_dispatch_key(item: dict) -> str:
+    context = item.get("context") if isinstance(item.get("context"), dict) else {}
+    return "|".join(
+        [
+            clean_cell(item.get("subject_name")),
+            clean_cell(context.get("today")),
+            clean_cell(item.get("trigger_at")),
+            clean_cell(item.get("notify_service")),
+        ]
+    )
+
+
+def should_dispatch_now(item: dict, now: datetime) -> bool:
+    trigger_at = parse_iso_datetime(item.get("trigger_at", ""))
+    if not trigger_at:
+        return False
+
+    if now < trigger_at:
+        return False
+
+    grace_deadline = trigger_at + timedelta(minutes=AUTO_NOTIFY_GRACE_MINUTES)
+    return now <= grace_deadline
+
+
+def was_dispatched(dispatch_key: str) -> bool:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT dispatch_key FROM notification_dispatch_log WHERE dispatch_key = ?",
+            (dispatch_key,),
+        ).fetchone()
+    return row is not None
+
+
+def record_dispatched(dispatch_key: str) -> None:
+    with get_conn() as conn:
+        conn.execute(
+            """
+            INSERT OR REPLACE INTO notification_dispatch_log (dispatch_key, dispatched_at)
+            VALUES (?, ?)
+            """,
+            (dispatch_key, now_iso()),
+        )
+        conn.commit()
+
+
+def dispatch_notification(item: dict) -> None:
+    notify_service = item["notify_service"]
+    if "." not in notify_service:
+        raise HTTPException(status_code=400, detail="notify_service must look like notify.some_service")
+
+    domain, service = notify_service.split(".", 1)
+    service_payload = {
+        "title": item["title"],
+        "message": item["message"],
+        "data": item["data"],
+    }
+
+    status_code, response_payload = call_home_assistant_api(
+        "POST",
+        f"/services/{domain}/{service}",
+        service_payload,
+    )
+
+    if status_code >= 400:
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message": "Home Assistant notify service call failed",
+                "status_code": status_code,
+                "response": response_payload,
+                "subject_name": item.get("subject_name", ""),
+            },
+        )
+
+
+def run_due_notifications() -> dict:
+    payload = build_notification_payload_from_settings()
+    if not payload.get("enabled"):
+        return {"sent_via": [], "count": 0, "reason": "disabled"}
+
+    today_weekday = datetime.now().strftime("%a").lower()[:3]
+    weekdays = payload.get("weekdays") or []
+    if today_weekday not in weekdays:
+        return {"sent_via": [], "count": 0, "reason": "weekday_filtered"}
+
+    now = datetime.now()
+    sent_via = []
+    for item in payload.get("notifications") or []:
+        if not should_dispatch_now(item, now):
+            continue
+
+        dispatch_key = make_dispatch_key(item)
+        if not dispatch_key or was_dispatched(dispatch_key):
+            continue
+
+        dispatch_notification(item)
+        record_dispatched(dispatch_key)
+        sent_via.append(item["notify_service"])
+
+    return {"sent_via": sent_via, "count": len(sent_via), "reason": "ok"}
+
+
+def auto_notification_loop() -> None:
+    while not _auto_notify_stop.is_set():
+        try:
+            run_due_notifications()
+        except Exception as exc:
+            print(f"Auto notification cycle failed: {exc}")
+        _auto_notify_stop.wait(AUTO_NOTIFY_POLL_SECONDS)
+
+
+def start_auto_notification_worker() -> None:
+    global _auto_notify_thread
+    if _auto_notify_thread and _auto_notify_thread.is_alive():
+        return
+
+    _auto_notify_stop.clear()
+    _auto_notify_thread = threading.Thread(
+        target=auto_notification_loop,
+        name="rota-auto-notify",
+        daemon=True,
+    )
+    _auto_notify_thread.start()
+
+
+def stop_auto_notification_worker() -> None:
+    global _auto_notify_thread
+    _auto_notify_stop.set()
+
+    if _auto_notify_thread and _auto_notify_thread.is_alive():
+        _auto_notify_thread.join(timeout=2)
+    _auto_notify_thread = None
+
+
 def call_home_assistant_api(method: str, path: str, payload: Optional[dict] = None) -> tuple[int, Any]:
     token = os.environ.get("SUPERVISOR_TOKEN", "").strip()
     if not token:
@@ -1199,34 +1363,8 @@ def api_test_notification():
 
     sent_via = []
     for item in notifications:
-        notify_service = item["notify_service"]
-        if "." not in notify_service:
-            raise HTTPException(status_code=400, detail="notify_service must look like notify.some_service")
-
-        domain, service = notify_service.split(".", 1)
-        service_payload = {
-            "title": item["title"],
-            "message": item["message"],
-            "data": item["data"],
-        }
-
-        status_code, response_payload = call_home_assistant_api(
-            "POST",
-            f"/services/{domain}/{service}",
-            service_payload,
-        )
-
-        if status_code >= 400:
-            raise HTTPException(
-                status_code=500,
-                detail={
-                    "message": "Home Assistant notify service call failed",
-                    "status_code": status_code,
-                    "response": response_payload,
-                    "subject_name": item.get("subject_name", ""),
-                },
-            )
-        sent_via.append(notify_service)
+        dispatch_notification(item)
+        sent_via.append(item["notify_service"])
 
     return JSONResponse(
         {

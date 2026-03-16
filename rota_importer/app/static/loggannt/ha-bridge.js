@@ -199,12 +199,15 @@
       .ha-notification-panel .actions .btn-primary{grid-column:span 2}
       .ha-notification-status{font-size:12px;color:var(--muted);margin:6px 0 0}
       .ha-preview{background:#fff;border:1px solid var(--border);border-radius:10px;padding:10px;font-size:12px;white-space:pre-wrap;word-break:break-word;max-height:180px;overflow:auto}
-      .subject-pills{display:flex;flex-wrap:wrap;gap:8px}
-      .subject-pill{border:1px solid var(--border);border-radius:999px;padding:6px 12px;background:#fff;cursor:pointer;font-size:12px}
-      .subject-pill.active{background:var(--accent);color:#fff;border-color:var(--accent)}
-      .pairing-popout{border:1px solid var(--border);border-radius:10px;padding:8px;background:var(--surface-soft)}
-      .pairing-row{display:grid;grid-template-columns:1fr 1fr auto auto;gap:6px;align-items:center;margin-bottom:6px}
-      .pair-critical{display:flex;align-items:center;gap:4px;font-size:11px;white-space:nowrap}
+      .person-settings-list{display:grid;gap:8px}
+      .person-settings-row{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:8px;padding:8px;border:1px solid var(--border);border-radius:10px;background:#fff}
+      .person-settings-row .swatch{width:16px;height:16px;border-radius:50%;border:1px solid var(--border)}
+      .person-settings-row .meta{font-size:11px;color:var(--muted)}
+      .person-settings-row .btn{padding:6px 10px;font-size:11px}
+      .person-modal[hidden]{display:none}
+      .person-modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:9999;padding:12px}
+      .person-modal-card{width:min(460px,100%);background:#fff;border-radius:12px;border:1px solid var(--border);padding:12px;display:grid;gap:8px}
+      .person-modal-actions{display:flex;justify-content:flex-end;gap:8px}
       .ha-debug-log{background:#fff;border:1px solid var(--border);border-radius:10px;padding:10px;font-size:12px;max-height:220px;overflow:auto}
       .ha-debug-log-item{padding:6px 0;border-bottom:1px solid var(--border)}
       .ha-debug-log-item:last-child{border-bottom:none}
@@ -229,14 +232,32 @@
         <label><input id="notifBeforeEndEnabled" type="checkbox"> Add handover alert (2 hours before shift end)</label>
       </div>
       <div class="control-group">
-        <label>Subjects to notify</label>
-        <div id="notifSubjectPills" class="subject-pills"></div>
+        <label>People settings</label>
+        <div id="notifPersonSettings" class="person-settings-list"></div>
       </div>
-      <details class="pairing-popout">
-        <summary>Pair subjects to notify services</summary>
-        <div id="notifPairingRows"></div>
-        <button class="btn btn-secondary" id="notifAddPairing" type="button">Add pair</button>
-      </details>
+      <div id="notifPersonModal" class="person-modal" hidden>
+        <div class="person-modal-card">
+          <h4 id="notifPersonModalTitle">Edit person</h4>
+          <div class="control-group">
+            <label for="notifPersonAlias">Alias</label>
+            <input id="notifPersonAlias" type="text" maxlength="40">
+          </div>
+          <div class="control-group">
+            <label for="notifPersonColor">Line chart colour</label>
+            <input id="notifPersonColor" type="color">
+          </div>
+          <div class="control-group">
+            <label for="notifPersonService">Notify service</label>
+            <select id="notifPersonService"></select>
+            <label><input id="notifPersonEnabled" type="checkbox"> Include in notifications</label>
+            <label><input id="notifPersonCritical" type="checkbox"> Critical sound</label>
+          </div>
+          <div class="person-modal-actions">
+            <button class="btn btn-secondary" id="notifPersonCancel" type="button">Cancel</button>
+            <button class="btn btn-primary" id="notifPersonSave" type="button">Save</button>
+          </div>
+        </div>
+      </div>
       <div class="control-group">
         <label>Weekdays</label>
         <div class="days-grid" id="notifWeekdays"></div>
@@ -290,78 +311,17 @@
     status.style.color = isError ? "#a11" : "var(--muted)";
   }
 
-  function getPairingRows() {
-    return qa(".pairing-row", q("#notifPairingRows"));
-  }
+  const notificationPersonConfig = new Map();
+  let notificationSubjects = [];
+  let notificationServices = [];
+  let activePersonKey = "";
 
-  function addPairingRow(subject = "", service = "", critical = false, subjects = [], services = []) {
-    const root = q("#notifPairingRows");
-    if (!root) return;
-    const row = document.createElement("div");
-    row.className = "pairing-row";
-    row.innerHTML = `
-      <select class="pair-subject"></select>
-      <select class="pair-service"></select>
-      <label class="pair-critical"><input type="checkbox" class="pair-critical-input"> Critical</label>
-      <button class="btn btn-secondary pair-remove" type="button">✕</button>
-    `;
-    root.appendChild(row);
-
-    const subjectSelect = q(".pair-subject", row);
-    const serviceSelect = q(".pair-service", row);
-    const criticalInput = q(".pair-critical-input", row);
-
-    subjectSelect.innerHTML = subjects.length
-      ? subjects.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join("")
-      : '<option value="">No subjects available</option>';
-    serviceSelect.innerHTML = services.length
-      ? services.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join("")
-      : '<option value="">No notify services available</option>';
-
-    if (subject) subjectSelect.value = subject;
-    if (service) serviceSelect.value = service;
-    if (criticalInput) criticalInput.checked = Boolean(critical);
-    q(".pair-remove", row).addEventListener("click", () => {
-      row.remove();
-      renderSubjectPills();
-    });
-    subjectSelect.addEventListener("change", renderSubjectPills);
-    serviceSelect.addEventListener("change", renderSubjectPills);
-    criticalInput?.addEventListener("change", renderSubjectPills);
-  }
-
-  function collectPairingMapsFromForm() {
-    const subjectServiceMap = {};
-    const subjectCriticalMap = {};
-    getPairingRows().forEach((row) => {
-      const subject = q(".pair-subject", row)?.value?.trim() || "";
-      const service = q(".pair-service", row)?.value?.trim() || "";
-      const critical = Boolean(q(".pair-critical-input", row)?.checked);
-      if (subject && service) {
-        subjectServiceMap[subject] = service;
-        subjectCriticalMap[subject] = critical;
-      }
-    });
-    return { subjectServiceMap, subjectCriticalMap };
-  }
-
-  function renderSubjectPills(selected = null) {
-    const pillsRoot = q("#notifSubjectPills");
-    if (!pillsRoot) return;
-    const map = collectPairingMapsFromForm().subjectServiceMap;
-    const subjects = Object.keys(map);
-    const keep = new Set(Array.isArray(selected) ? selected : qa(".subject-pill.active", pillsRoot).map((b) => b.dataset.subject));
-    pillsRoot.innerHTML = "";
-    subjects.forEach((subject) => {
-      const btn = document.createElement("button");
-      btn.type = "button";
-      btn.className = "subject-pill";
-      btn.dataset.subject = subject;
-      btn.textContent = subject;
-      if (keep.has(subject)) btn.classList.add("active");
-      btn.addEventListener("click", () => btn.classList.toggle("active"));
-      pillsRoot.appendChild(btn);
-    });
+  function personConfigFor(subject) {
+    const existing = notificationPersonConfig.get(subject);
+    if (existing) return existing;
+    const created = { service: "", critical: false, enabled: false };
+    notificationPersonConfig.set(subject, created);
+    return created;
   }
 
   function getNotificationPayloadFromForm() {
@@ -378,16 +338,23 @@
       (el.dataset.day || "").trim().toLowerCase()
     );
 
-    const pairingMaps = collectPairingMapsFromForm();
-    const subjectServiceMap = pairingMaps.subjectServiceMap;
-    const subjectNames = qa("#notifSubjectPills .subject-pill.active").map((el) => el.dataset.subject).filter((name) => Boolean(subjectServiceMap[name]));
+    const subjectServiceMap = {};
+    const subjectCriticalMap = {};
+    const subjectNames = [];
+    notificationSubjects.forEach((subject) => {
+      const cfg = personConfigFor(subject);
+      if (!cfg.service) return;
+      subjectServiceMap[subject] = cfg.service;
+      subjectCriticalMap[subject] = Boolean(cfg.critical);
+      if (cfg.enabled) subjectNames.push(subject);
+    });
 
     return {
       enabled: Boolean(q("#notifEnabled")?.checked),
       notify_before_end_enabled: Boolean(q("#notifBeforeEndEnabled")?.checked),
       subject_names: subjectNames,
       subject_service_map: subjectServiceMap,
-      subject_critical_map: pairingMaps.subjectCriticalMap,
+      subject_critical_map: subjectCriticalMap,
       weekdays,
       title_template: q("#notifTitle")?.value || "",
       message_template: q("#notifMessage")?.value || "",
@@ -397,7 +364,75 @@
     };
   }
 
+  function renderPersonSettingsList() {
+    const root = q("#notifPersonSettings");
+    if (!root) return;
+    root.innerHTML = "";
+    notificationSubjects.forEach((subject) => {
+      const cfg = personConfigFor(subject);
+      const alias = getAliasPreferenceByKey(`raw:${(subject || "").trim().toLowerCase()}`) || "";
+      const color = getColorPreferenceByKey(`raw:${(subject || "").trim().toLowerCase()}`) || "#4b4b4b";
+      const row = document.createElement("div");
+      row.className = "person-settings-row";
+      row.innerHTML = `
+        <span class="swatch" style="background:${escapeHtml(color)}"></span>
+        <div>
+          <div><strong>${escapeHtml(alias || subject)}</strong>${alias ? ` <small>(${escapeHtml(subject)})</small>` : ""}</div>
+          <div class="meta">${cfg.enabled ? "Enabled" : "Disabled"} · ${escapeHtml(cfg.service || "No notify service")}</div>
+        </div>
+        <button class="btn btn-secondary" type="button">Edit</button>
+      `;
+      q("button", row)?.addEventListener("click", () => openPersonModal(subject));
+      root.appendChild(row);
+    });
+  }
+
+  function openPersonModal(subject) {
+    activePersonKey = subject;
+    const modal = q("#notifPersonModal");
+    if (!modal) return;
+    const cfg = personConfigFor(subject);
+    const key = `raw:${(subject || "").trim().toLowerCase()}`;
+    q("#notifPersonModalTitle").textContent = `Edit ${subject}`;
+    q("#notifPersonAlias").value = getAliasPreferenceByKey(key) || "";
+    q("#notifPersonColor").value = getColorPreferenceByKey(key) || "#4b4b4b";
+    const serviceSelect = q("#notifPersonService");
+    serviceSelect.innerHTML = notificationServices.length
+      ? notificationServices.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join("")
+      : '<option value="">No notify services available</option>';
+    serviceSelect.value = cfg.service || "";
+    q("#notifPersonEnabled").checked = Boolean(cfg.enabled);
+    q("#notifPersonCritical").checked = Boolean(cfg.critical);
+    modal.hidden = false;
+  }
+
+  function closePersonModal() {
+    const modal = q("#notifPersonModal");
+    if (modal) modal.hidden = true;
+    activePersonKey = "";
+  }
+
+  function savePersonModal() {
+    if (!activePersonKey) return;
+    const key = `raw:${(activePersonKey || "").trim().toLowerCase()}`;
+    handleAliasPreferenceChange(key, q("#notifPersonAlias")?.value || "");
+    handleColorPreferenceChange(key, q("#notifPersonColor")?.value || "#4b4b4b");
+    const cfg = personConfigFor(activePersonKey);
+    cfg.service = q("#notifPersonService")?.value?.trim() || "";
+    cfg.enabled = Boolean(q("#notifPersonEnabled")?.checked) && Boolean(cfg.service);
+    cfg.critical = Boolean(q("#notifPersonCritical")?.checked);
+    notificationPersonConfig.set(activePersonKey, cfg);
+    renderPersonSettingsList();
+    closePersonModal();
+  }
+
   function applyNotificationSettingsToForm(settings, subjects, services) {
+    const pairings = settings.subject_service_map || {};
+    const configuredSubjects = Object.keys(pairings);
+    notificationSubjects = Array.from(new Set([...(Array.isArray(subjects) ? subjects : []), ...configuredSubjects])).sort((a, b) => a.localeCompare(b));
+    notificationServices = Array.isArray(services) ? services : [];
+    notificationPersonConfig.clear();
+
     q("#notifEnabled").checked = Boolean(settings.enabled);
     q("#notifBeforeEndEnabled").checked = Boolean(settings.notify_before_end_enabled);
     q("#notifTitle").value = settings.title_template || "";
@@ -411,17 +446,16 @@
       checkbox.checked = activeDays.has((checkbox.dataset.day || "").toLowerCase());
     });
 
-    const pairings = settings.subject_service_map || {};
     const criticalMap = settings.subject_critical_map || {};
-    const root = q("#notifPairingRows");
-    if (root) root.innerHTML = "";
-    const pairs = Object.entries(pairings);
-    if (pairs.length) {
-      pairs.forEach(([subject, service]) => addPairingRow(subject, service, Boolean(criticalMap[subject]), subjects, services));
-    } else {
-      addPairingRow(subjects[0] || "", services[0] || "", false, subjects, services);
-    }
-    renderSubjectPills(settings.subject_names || []);
+    const selected = new Set(Array.isArray(settings.subject_names) ? settings.subject_names : []);
+    notificationSubjects.forEach((subject) => {
+      notificationPersonConfig.set(subject, {
+        service: pairings[subject] || "",
+        critical: Boolean(criticalMap[subject]),
+        enabled: selected.has(subject),
+      });
+    });
+    renderPersonSettingsList();
   }
 
   async function refreshNotificationPreview() {
@@ -481,9 +515,11 @@
     await refreshNotificationPreview();
     await refreshNotificationDebugLog();
 
-    q("#notifAddPairing")?.addEventListener("click", () => {
-      addPairingRow(subjects[0] || "", services[0] || "", false, subjects, services);
-      renderSubjectPills();
+
+    q("#notifPersonCancel")?.addEventListener("click", closePersonModal);
+    q("#notifPersonSave")?.addEventListener("click", savePersonModal);
+    q("#notifPersonModal")?.addEventListener("click", (event) => {
+      if (event.target && event.target.id === "notifPersonModal") closePersonModal();
     });
 
     q("#notifPreview")?.addEventListener("click", async () => {

@@ -710,6 +710,37 @@ def sanitize_preferences_payload(payload: dict | None) -> tuple[dict, dict]:
     return colors, aliases
 
 
+def load_alias_preferences() -> dict[str, str]:
+    with get_conn() as conn:
+        row = conn.execute(
+            "SELECT alias_preferences FROM app_preferences WHERE singleton_key = 'global'"
+        ).fetchone()
+
+    if not row:
+        return {}
+
+    aliases = parse_json_object(row["alias_preferences"], {})
+    cleaned: dict[str, str] = {}
+    for key, value in aliases.items():
+        if not isinstance(key, str) or not isinstance(value, str):
+            continue
+        key_clean = key.strip().lower()
+        value_clean = value.strip()
+        if key_clean and value_clean:
+            cleaned[key_clean] = value_clean
+    return cleaned
+
+
+def alias_for_name(name: str, aliases: dict[str, str]) -> str:
+    clean_name = clean_cell(name)
+    if not clean_name:
+        return ""
+
+    raw_key = f"raw:{clean_name.lower()}"
+    clean_key = f"clean:{clean_name.lower()}"
+    return aliases.get(raw_key) or aliases.get(clean_key) or clean_name
+
+
 def get_notification_settings_row() -> sqlite3.Row:
     with get_conn() as conn:
         row = conn.execute(
@@ -950,12 +981,16 @@ def join_human_names(names: List[str]) -> str:
     return f"{', '.join(cleaned[:-1])}, and {cleaned[-1]}"
 
 
-def format_people_for_handover(people: List[dict], include_non_management_start: bool = False) -> str:
+def format_people_for_handover(
+    people: List[dict],
+    include_non_management_start: bool = False,
+    aliases: Optional[dict[str, str]] = None,
+) -> str:
     labels = []
     for person in people:
         if not isinstance(person, dict):
             continue
-        name = clean_cell(person.get("employee"))
+        name = alias_for_name(clean_cell(person.get("employee")), aliases or {})
         if not name:
             continue
         start_time = clean_cell(person.get("start_time"))
@@ -966,7 +1001,7 @@ def format_people_for_handover(people: List[dict], include_non_management_start:
     return join_human_names(labels)
 
 
-def build_shift_end_message(end_time: str, team_snapshot: dict) -> str:
+def build_shift_end_message(end_time: str, team_snapshot: dict, aliases: Optional[dict[str, str]] = None) -> str:
     handover_managers = (
         team_snapshot.get("handover_managers_details") if isinstance(team_snapshot.get("handover_managers_details"), list) else []
     )
@@ -974,8 +1009,8 @@ def build_shift_end_message(end_time: str, team_snapshot: dict) -> str:
         team_snapshot.get("handover_team_details") if isinstance(team_snapshot.get("handover_team_details"), list) else []
     )
 
-    handover_managers_text = format_people_for_handover(handover_managers, include_non_management_start=False)
-    handover_team_text = format_people_for_handover(handover_team, include_non_management_start=True)
+    handover_managers_text = format_people_for_handover(handover_managers, include_non_management_start=False, aliases=aliases)
+    handover_team_text = format_people_for_handover(handover_team, include_non_management_start=True, aliases=aliases)
 
     if handover_managers_text:
         manager_verb = "are" if len(handover_managers) > 1 else "is"
@@ -1355,6 +1390,7 @@ def get_shift_team_snapshot(upload_id: Optional[int], today: str, subject_name: 
 def build_notification_payload_from_settings() -> dict:
     settings_row = get_notification_settings_row()
     settings = serialize_notification_settings(settings_row)
+    alias_preferences = load_alias_preferences()
 
     today = datetime.now().strftime("%Y-%m-%d")
     notifications = []
@@ -1366,20 +1402,40 @@ def build_notification_payload_from_settings() -> dict:
         is_critical = bool(sanitize_bool(settings.get("subject_critical_map", {}).get(subject_name), default=False))
 
         rota_context = get_subject_shift_and_coworkers(subject_name, today)
+        subject_alias = alias_for_name(subject_name, alias_preferences)
+
+        coworkers_list = rota_context.get("coworkers_list") if isinstance(rota_context.get("coworkers_list"), list) else []
+        aliased_coworkers_list = []
+        for coworker in coworkers_list:
+            label = clean_cell(coworker)
+            if not label:
+                continue
+            if " until " in label:
+                base_name, end_part = label.split(" until ", 1)
+                aliased_coworkers_list.append(f"{alias_for_name(base_name, alias_preferences)} until {end_part}")
+                continue
+            if re.fullmatch(r".+\s*\(\d{2}:\d{2}\)", label):
+                base_name, time_part = label.rsplit("(", 1)
+                aliased_coworkers_list.append(f"{alias_for_name(base_name.strip(), alias_preferences)} ({time_part}")
+                continue
+            aliased_coworkers_list.append(alias_for_name(label, alias_preferences))
+
+        coworkers_text = ", ".join(aliased_coworkers_list) if aliased_coworkers_list else "Nobody found"
+
         context = {
-            "subject_name": rota_context["subject_name"],
+            "subject_name": subject_alias,
             "status": rota_context["status"],
             "today": rota_context["today"],
             "shift": rota_context["shift"],
             "start_time": rota_context.get("start_time") or "",
             "end_time": rota_context.get("end_time") or "",
-            "coworkers": rota_context["coworkers"],
+            "coworkers": coworkers_text,
             "upload_id": rota_context["upload_id"] or "",
         }
 
         title = render_simple_template(settings["title_template"], context).strip()
         message = render_simple_template(settings["message_template"], context).strip()
-        message = normalize_subject_working_phrase(message, subject_name)
+        message = normalize_subject_working_phrase(message, subject_alias)
 
         if rota_context["status"] in {"NOT_FOUND", "NOT_WORKING"}:
             message = ""
@@ -1393,7 +1449,7 @@ def build_notification_payload_from_settings() -> dict:
             elif rota_context["status"] == "NOT_WORKING":
                 message = "You are not rota'd in today."
             else:
-                message = f"You're working today with: {rota_context['coworkers']}."
+                message = f"You're working today with: {coworkers_text}."
 
         data_payload = settings["extra_data"] if isinstance(settings["extra_data"], dict) else {}
         data_payload = json.loads(json.dumps(data_payload))
@@ -1468,7 +1524,7 @@ def build_notification_payload_from_settings() -> dict:
             "team_with_subject": team_snapshot["team_with_subject"],
         }
 
-        end_message = build_shift_end_message(end_time, team_snapshot)
+        end_message = build_shift_end_message(end_time, team_snapshot, aliases=alias_preferences)
 
         notifications.append(
             {

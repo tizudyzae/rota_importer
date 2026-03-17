@@ -4,7 +4,20 @@
   const STORAGE_SELECTION_KEY = "loggannt.rotas.selection";
   const RELOAD_FLAG = "loggannt.ha.synced.once";
 
+  const clientDebugEvents = [];
+
+  function appendClientDebugLine(level, message, data) {
+    const timestamp = new Date().toISOString();
+    const suffix = data === undefined ? "" : ` ${JSON.stringify(data)}`;
+    const line = `[${timestamp}] [${level}] ${message}${suffix}`;
+    clientDebugEvents.push(line);
+    if (clientDebugEvents.length > 250) clientDebugEvents.shift();
+    const root = document.getElementById("notifClientDebugLog");
+    if (root) root.textContent = clientDebugEvents.join("\n");
+  }
+
   function debugLog(message, data) {
+    appendClientDebugLine("INFO", message, data);
     if (data === undefined) {
       console.log(`[PeopleSettings] ${message}`);
       return;
@@ -12,7 +25,23 @@
     console.log(`[PeopleSettings] ${message}`, data);
   }
 
-  debugLog("ha-bridge script loaded");
+  function debugError(message, err) {
+    appendClientDebugLine("ERROR", message, {
+      message: err && err.message ? err.message : String(err),
+      stack: err && err.stack ? err.stack : "",
+    });
+    console.error(`[PeopleSettings] ${message}`, err);
+  }
+
+  window.addEventListener("error", (event) => {
+    debugError("Unhandled window error", event.error || event.message || "unknown error");
+  });
+
+  window.addEventListener("unhandledrejection", (event) => {
+    debugError("Unhandled promise rejection", event.reason || "unknown rejection");
+  });
+
+  debugLog("ha-bridge script loaded", { href: window.location.href });
 
   function q(sel, root = document) {
     return root.querySelector(sel);
@@ -305,8 +334,13 @@
         <button class="btn btn-secondary" id="notifRefreshDebug" type="button">Refresh debug log</button>
         <div class="ha-debug-log" id="notifDebugLog" aria-live="polite"></div>
       </div>
+      <div class="control-group">
+        <label>Client debug log</label>
+        <pre class="ha-preview" id="notifClientDebugLog" aria-live="polite"></pre>
+      </div>
     `;
     panel.appendChild(wrapper);
+    appendClientDebugLine("INFO", "Notification panel DOM injected");
 
     const weekdays = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
     const weekdaysRoot = q("#notifWeekdays", wrapper);
@@ -500,11 +534,12 @@
 
   async function savePersonModal() {
     if (!activePersonKey) {
-      console.error("[PeopleSettings] Save attempted without an active person");
+      debugError("Save attempted without an active person", new Error("No activePersonKey"));
+      setNotificationStatus("Save failed: no person selected", true);
       return;
     }
     try {
-      console.log("[PeopleSettings] Save button clicked for person", { activePersonKey });
+      debugLog("Save button clicked for person", { activePersonKey });
       await saveAliasAndColorPreference(
         activePersonKey,
         q("#notifPersonAlias")?.value || "",
@@ -525,9 +560,9 @@
       renderPersonSettingsList();
       closePersonModal();
       setNotificationStatus("Person settings saved.");
-      console.log("[PeopleSettings] Person settings saved successfully", { activePersonKey });
+      debugLog("Person settings saved successfully", { activePersonKey });
     } catch (err) {
-      console.error("[PeopleSettings] Failed to save person settings", err);
+      debugError("Failed to save person settings", err);
       setNotificationStatus(err.message || "Failed to save person settings", true);
     }
   }
@@ -665,9 +700,16 @@
       if (!saveButton) return;
       event.preventDefault();
       event.stopPropagation();
-      console.log("[PeopleSettings] notifPersonSave delegated click handler fired");
+      debugLog("notifPersonSave delegated click handler fired");
       savePersonModal();
     }, true);
+    q("#notifPersonSave")?.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      debugLog("notifPersonSave direct click handler fired");
+      savePersonModal();
+    });
+
     q("#notifPersonModal")?.addEventListener("click", (event) => {
       if (event.target && event.target.id === "notifPersonModal") closePersonModal();
     });

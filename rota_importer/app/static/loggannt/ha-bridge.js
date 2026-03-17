@@ -192,6 +192,7 @@
     style.id = "haNotificationSettingsStyles";
     style.textContent = `
       .ha-notification-panel{margin-top:12px;padding-top:12px;border-top:1px solid var(--border)}
+      #appearanceControls{display:none !important}
       .ha-notification-panel .control-group{display:grid;gap:6px;margin-bottom:10px}
       .ha-notification-panel label{font-size:12px;font-weight:600;color:var(--ink)}
       .ha-notification-panel input,.ha-notification-panel textarea,.ha-notification-panel select{width:100%;border:1px solid var(--border);border-radius:10px;padding:8px 10px;background:#fff;color:var(--ink);font:inherit}
@@ -304,6 +305,14 @@
       .join("");
   }
 
+  function hideLegacyAppearanceControls() {
+    const appearance = q("#appearanceControls");
+    if (!appearance) return;
+    appearance.hidden = true;
+    appearance.setAttribute("aria-hidden", "true");
+    appearance.innerHTML = "";
+  }
+
   function setNotificationStatus(message, isError = false) {
     const status = q("#notifStatus");
     if (!status) return;
@@ -412,18 +421,76 @@
     activePersonKey = "";
   }
 
-  function savePersonModal() {
+  function canUseViewerAppearanceFns() {
+    return (
+      typeof getAliasPreferenceByKey === "function" &&
+      typeof getColorPreferenceByKey === "function" &&
+      typeof handleAliasPreferenceChange === "function" &&
+      typeof handleColorPreferenceChange === "function"
+    );
+  }
+
+  async function saveAliasAndColorPreference(name, alias, color) {
+    const key = `raw:${(name || "").trim().toLowerCase()}`;
+    if (!key || key === "raw:") return;
+
+    if (canUseViewerAppearanceFns()) {
+      handleAliasPreferenceChange(key, alias || "");
+      handleColorPreferenceChange(key, color || "#4b4b4b");
+      return;
+    }
+
+    const resp = await fetch(apiUrl("/api/preferences"), { cache: "no-store" });
+    if (!resp.ok) {
+      throw new Error(`Failed to load appearance preferences: ${resp.status}`);
+    }
+    const payload = await resp.json();
+    const colors = payload && payload.colors && typeof payload.colors === "object" ? { ...payload.colors } : {};
+    const aliases = payload && payload.aliases && typeof payload.aliases === "object" ? { ...payload.aliases } : {};
+
+    const safeAlias = (alias || "").trim();
+    if (safeAlias) {
+      aliases[key] = safeAlias;
+    } else {
+      delete aliases[key];
+    }
+
+    const safeColor = (color || "").trim();
+    if (/^#[0-9a-fA-F]{6}$/.test(safeColor)) {
+      colors[key] = safeColor.toLowerCase();
+    } else {
+      delete colors[key];
+    }
+
+    const saveResp = await fetch(apiUrl("/api/preferences"), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ colors, aliases }),
+    });
+    if (!saveResp.ok) {
+      throw new Error(`Failed to save appearance preferences: ${saveResp.status}`);
+    }
+  }
+
+  async function savePersonModal() {
     if (!activePersonKey) return;
-    const key = `raw:${(activePersonKey || "").trim().toLowerCase()}`;
-    handleAliasPreferenceChange(key, q("#notifPersonAlias")?.value || "");
-    handleColorPreferenceChange(key, q("#notifPersonColor")?.value || "#4b4b4b");
-    const cfg = personConfigFor(activePersonKey);
-    cfg.service = q("#notifPersonService")?.value?.trim() || "";
-    cfg.enabled = Boolean(q("#notifPersonEnabled")?.checked) && Boolean(cfg.service);
-    cfg.critical = Boolean(q("#notifPersonCritical")?.checked);
-    notificationPersonConfig.set(activePersonKey, cfg);
-    renderPersonSettingsList();
-    closePersonModal();
+    try {
+      await saveAliasAndColorPreference(
+        activePersonKey,
+        q("#notifPersonAlias")?.value || "",
+        q("#notifPersonColor")?.value || "#4b4b4b"
+      );
+      const cfg = personConfigFor(activePersonKey);
+      cfg.service = q("#notifPersonService")?.value?.trim() || "";
+      cfg.enabled = Boolean(q("#notifPersonEnabled")?.checked) && Boolean(cfg.service);
+      cfg.critical = Boolean(q("#notifPersonCritical")?.checked);
+      notificationPersonConfig.set(activePersonKey, cfg);
+      renderPersonSettingsList();
+      closePersonModal();
+      setNotificationStatus("Person settings saved.");
+    } catch (err) {
+      setNotificationStatus(err.message || "Failed to save person settings", true);
+    }
   }
 
   function applyNotificationSettingsToForm(settings, subjects, services) {
@@ -496,7 +563,16 @@
 
   async function initNotificationPanel() {
     injectNotificationPanel();
+    hideLegacyAppearanceControls();
     if (!q("#haNotificationPanel")) return;
+
+    q("#notifPersonCancel")?.addEventListener("click", closePersonModal);
+    q("#notifPersonSave")?.addEventListener("click", () => {
+      savePersonModal();
+    });
+    q("#notifPersonModal")?.addEventListener("click", (event) => {
+      if (event.target && event.target.id === "notifPersonModal") closePersonModal();
+    });
 
     const [settingsResp, servicesResp, subjectsResp] = await Promise.all([
       fetch(apiUrl("/api/notification_settings"), { cache: "no-store" }),
@@ -512,15 +588,12 @@
     const subjects = Array.isArray(subjectsPayload.subjects) ? subjectsPayload.subjects : [];
 
     applyNotificationSettingsToForm(settings, subjects, services);
-    await refreshNotificationPreview();
-    await refreshNotificationDebugLog();
-
-
-    q("#notifPersonCancel")?.addEventListener("click", closePersonModal);
-    q("#notifPersonSave")?.addEventListener("click", savePersonModal);
-    q("#notifPersonModal")?.addEventListener("click", (event) => {
-      if (event.target && event.target.id === "notifPersonModal") closePersonModal();
-    });
+    try {
+      await refreshNotificationPreview();
+      await refreshNotificationDebugLog();
+    } catch (err) {
+      setNotificationStatus(err.message || "Failed to refresh notification preview", true);
+    }
 
     q("#notifPreview")?.addEventListener("click", async () => {
       try {

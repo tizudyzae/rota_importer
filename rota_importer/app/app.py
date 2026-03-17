@@ -1031,9 +1031,9 @@ def build_shift_end_message(end_time: str, team_snapshot: dict, aliases: Optiona
         team_snapshot.get("bridge_people_details") if isinstance(team_snapshot.get("bridge_people_details"), list) else []
     )
 
-    next_people_text = format_people_for_handover(next_shift_people, include_non_management_start=True)
-    next_team_text = format_people_for_handover(next_shift_team, include_non_management_start=True)
-    bridge_text = format_people_for_handover(bridge_people, include_non_management_start=True)
+    next_people_text = format_people_for_handover(next_shift_people, include_non_management_start=True, aliases=aliases)
+    next_team_text = format_people_for_handover(next_shift_team, include_non_management_start=True, aliases=aliases)
+    bridge_text = format_people_for_handover(bridge_people, include_non_management_start=True, aliases=aliases)
 
     next_day_openers = team_snapshot.get("next_day_openers") if isinstance(team_snapshot.get("next_day_openers"), list) else []
     next_day_opening_team = (
@@ -1046,13 +1046,14 @@ def build_shift_end_message(end_time: str, team_snapshot: dict, aliases: Optiona
             non_manager_openers = [person for person in next_day_openers if person not in manager_openers]
 
             if manager_openers:
-                openers_text = join_human_names(manager_openers)
+                openers_text = join_human_names([alias_for_name(person, aliases or {}) for person in manager_openers])
                 extra_openers = non_manager_openers
             else:
-                openers_text = join_human_names(next_day_openers)
+                openers_text = join_human_names([alias_for_name(person, aliases or {}) for person in next_day_openers])
                 extra_openers = []
 
-            combined_team = join_human_names(extra_openers + next_day_opening_team)
+            combined_people = [alias_for_name(person, aliases or {}) for person in (extra_openers + next_day_opening_team)]
+            combined_team = join_human_names(combined_people)
 
             opener_verb = "are" if len(manager_openers) != 1 else "is"
             if combined_team:

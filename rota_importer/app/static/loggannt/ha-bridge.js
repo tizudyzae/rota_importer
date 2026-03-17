@@ -4,6 +4,16 @@
   const STORAGE_SELECTION_KEY = "loggannt.rotas.selection";
   const RELOAD_FLAG = "loggannt.ha.synced.once";
 
+  function debugLog(message, data) {
+    if (data === undefined) {
+      console.log(`[PeopleSettings] ${message}`);
+      return;
+    }
+    console.log(`[PeopleSettings] ${message}`, data);
+  }
+
+  debugLog("ha-bridge script loaded");
+
   function q(sel, root = document) {
     return root.querySelector(sel);
   }
@@ -403,6 +413,7 @@
 
   function openPersonModal(subject) {
     activePersonKey = subject;
+    debugLog("Opening person modal", { subject });
     const modal = q("#notifPersonModal");
     if (!modal) return;
     const cfg = personConfigFor(subject);
@@ -488,7 +499,10 @@
   }
 
   async function savePersonModal() {
-    if (!activePersonKey) return;
+    if (!activePersonKey) {
+      console.error("[PeopleSettings] Save attempted without an active person");
+      return;
+    }
     try {
       console.log("[PeopleSettings] Save button clicked for person", { activePersonKey });
       await saveAliasAndColorPreference(
@@ -638,13 +652,22 @@
   async function initNotificationPanel() {
     injectNotificationPanel();
     hideLegacyAppearanceControls();
-    if (!q("#haNotificationPanel")) return;
+    if (!q("#haNotificationPanel")) {
+      console.warn("[PeopleSettings] Notification panel not found after injection");
+      return;
+    }
+    debugLog("Notification panel initialised");
 
     q("#notifPersonCancel")?.addEventListener("click", closePersonModal);
-    q("#notifPersonSave")?.addEventListener("click", () => {
-      console.log("[PeopleSettings] notifPersonSave button click handler fired");
+    document.addEventListener("click", (event) => {
+      const target = event.target instanceof Element ? event.target : null;
+      const saveButton = target ? target.closest("#notifPersonSave") : null;
+      if (!saveButton) return;
+      event.preventDefault();
+      event.stopPropagation();
+      console.log("[PeopleSettings] notifPersonSave delegated click handler fired");
       savePersonModal();
-    });
+    }, true);
     q("#notifPersonModal")?.addEventListener("click", (event) => {
       if (event.target && event.target.id === "notifPersonModal") closePersonModal();
     });

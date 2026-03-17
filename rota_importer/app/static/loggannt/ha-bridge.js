@@ -258,7 +258,9 @@
     const style = document.createElement("style");
     style.id = "haNotificationSettingsStyles";
     style.textContent = `
-      .ha-notification-panel{margin-top:12px;padding-top:12px;border-top:1px solid var(--border)}
+      .ha-notification-panel{margin-top:0}
+      .ha-settings-section{margin-top:10px}
+      .ha-settings-section .control-section-body{margin-top:10px}
       #appearanceControls{display:none !important}
       .ha-notification-panel .control-group{display:grid;gap:6px;margin-bottom:10px}
       .ha-notification-panel label{font-size:12px;font-weight:600;color:var(--ink)}
@@ -276,6 +278,9 @@
       .person-modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:9999;padding:12px}
       .person-modal-card{width:min(460px,100%);background:#fff;border-radius:12px;border:1px solid var(--border);padding:12px;display:grid;gap:8px}
       .person-modal-actions{display:flex;justify-content:flex-end;gap:8px}
+      .person-modal-actions .btn:first-child{margin-right:auto}
+      .person-color-preview{height:44px;border-radius:10px;border:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-weight:700}
+      .person-notify-settings[hidden]{display:none !important}
       .ha-debug-log{background:#fff;border:1px solid var(--border);border-radius:10px;padding:10px;font-size:12px;max-height:220px;overflow:auto}
       .ha-debug-log-item{padding:6px 0;border-bottom:1px solid var(--border)}
       .ha-debug-log-item:last-child{border-bottom:none}
@@ -293,42 +298,13 @@
     wrapper.className = "ha-notification-panel";
     wrapper.id = "haNotificationPanel";
     wrapper.innerHTML = `
-      <h3 class="panel-title">Notification automation</h3>
+      <details class="control-section ha-settings-section">
+        <summary>Notification automation</summary>
+        <div class="control-section-body">
       <p class="control-hint">Notifications trigger 2 hours before each selected subject's shift start time. Optional handover notices can also trigger 2 hours before shift end.</p>
       <div class="control-group">
         <label><input id="notifEnabled" type="checkbox"> Enabled</label>
         <label><input id="notifBeforeEndEnabled" type="checkbox"> Add handover alert (2 hours before shift end)</label>
-      </div>
-      <div class="control-group">
-        <label>People settings</label>
-        <div id="notifPersonSettings" class="person-settings-list"></div>
-      </div>
-      <div id="notifPersonModal" class="person-modal" hidden>
-        <div class="person-modal-card">
-          <h4 id="notifPersonModalTitle">Edit person</h4>
-          <div class="control-group">
-            <label for="notifPersonAlias">Alias</label>
-            <input id="notifPersonAlias" type="text" maxlength="40">
-          </div>
-          <div class="control-group">
-            <label for="notifPersonColor">Line chart colour</label>
-            <input id="notifPersonColor" type="color">
-          </div>
-          <div class="control-group">
-            <label for="notifPersonService">Notify service</label>
-            <select id="notifPersonService"></select>
-            <label><input id="notifPersonEnabled" type="checkbox"> Include in notifications</label>
-            <label><input id="notifPersonCritical" type="checkbox"> Critical sound</label>
-          </div>
-          <div class="person-modal-actions">
-            <button class="btn btn-secondary" id="notifPersonCancel" type="button">Cancel</button>
-            <button class="btn btn-primary" id="notifPersonSave" type="button">Save</button>
-          </div>
-          <div class="control-group">
-            <label>People settings debug</label>
-            <pre class="ha-preview" id="notifPeopleDebugLog" aria-live="polite"></pre>
-          </div>
-        </div>
       </div>
       <div class="control-group">
         <label>Weekdays</label>
@@ -370,6 +346,49 @@
         <label>Client debug log</label>
         <pre class="ha-preview" id="notifClientDebugLog" aria-live="polite"></pre>
       </div>
+      </div>
+      </details>
+
+      <details class="control-section ha-settings-section" id="haPeopleSettingsSection">
+        <summary>People Settings</summary>
+        <div class="control-section-body">
+          <div class="control-group">
+            <div id="notifPersonSettings" class="person-settings-list"></div>
+          </div>
+        </div>
+      </details>
+
+      <div id="notifPersonModal" class="person-modal" hidden>
+        <div class="person-modal-card">
+          <h4 id="notifPersonModalTitle">Edit person</h4>
+          <div class="control-group">
+            <label for="notifPersonAlias">Alias</label>
+            <input id="notifPersonAlias" type="text" maxlength="40">
+          </div>
+          <div class="control-group">
+            <label for="notifPersonColor">Line chart colour</label>
+            <input id="notifPersonColor" type="color">
+            <div id="notifPersonColorPreview" class="person-color-preview">#4b4b4b</div>
+          </div>
+          <div class="control-group">
+            <label><input id="notifPersonEnabled" type="checkbox"> Include in notifications</label>
+          </div>
+          <div class="control-group person-notify-settings" id="notifPersonNotifySettings" hidden>
+            <label for="notifPersonService">Notify service</label>
+            <select id="notifPersonService"></select>
+            <label><input id="notifPersonCritical" type="checkbox"> Critical sound</label>
+          </div>
+          <div class="person-modal-actions">
+            <button class="btn btn-secondary" id="notifPersonReset" type="button">Reset to defaults</button>
+            <button class="btn btn-secondary" id="notifPersonCancel" type="button">Cancel</button>
+            <button class="btn btn-primary" id="notifPersonSave" type="button">Save</button>
+          </div>
+          <div class="control-group">
+            <label>People settings debug</label>
+            <pre class="ha-preview" id="notifPeopleDebugLog" aria-live="polite"></pre>
+          </div>
+        </div>
+      </div>
     `;
     panel.appendChild(wrapper);
     appendClientDebugLine("INFO", "Notification panel DOM injected");
@@ -400,6 +419,23 @@
   let notificationSubjects = [];
   let notificationServices = [];
   let activePersonKey = "";
+
+  function updatePersonColorPreview() {
+    const colorInput = q("#notifPersonColor");
+    const preview = q("#notifPersonColorPreview");
+    if (!colorInput || !preview) return;
+    const color = colorInput.value || "#4b4b4b";
+    preview.style.background = color;
+    preview.style.color = "#fff";
+    preview.textContent = color.toLowerCase();
+  }
+
+  function updatePersonNotificationFields() {
+    const includeCheckbox = q("#notifPersonEnabled");
+    const notifySettings = q("#notifPersonNotifySettings");
+    if (!includeCheckbox || !notifySettings) return;
+    notifySettings.hidden = !includeCheckbox.checked;
+  }
 
   function personConfigFor(subject) {
     const existing = notificationPersonConfig.get(subject);
@@ -499,6 +535,8 @@
     }
     q("#notifPersonEnabled").checked = Boolean(cfg.enabled);
     q("#notifPersonCritical").checked = Boolean(cfg.critical);
+    updatePersonNotificationFields();
+    updatePersonColorPreview();
     modal.hidden = false;
   }
 
@@ -517,13 +555,20 @@
     );
   }
 
-  async function saveAliasAndColorPreference(name, alias, color) {
-    const key = `raw:${(name || "").trim().toLowerCase()}`;
-    if (!key || key === "raw:") return;
+  function buildPersonPreferenceKeys(name) {
+    const normalized = (name || "").trim().toLowerCase();
+    if (!normalized) return [];
+    return Array.from(new Set([`raw:${normalized}`, `clean:${normalized}`]));
+  }
+
+  async function saveAliasAndColorPreference(name, alias, color, clearColor = false) {
+    const keys = clearColor ? buildPersonPreferenceKeys(name) : [`raw:${(name || "").trim().toLowerCase()}`];
+    const validKeys = keys.filter((key) => key && key !== "raw:" && key !== "clean:");
+    if (!validKeys.length) return;
 
     peopleDebugLog("Saving alias/color", {
       name,
-      key,
+      keys: validKeys,
       alias,
       color,
       usingViewerFns: canUseViewerAppearanceFns(),
@@ -534,21 +579,21 @@
       let colorHookOk = false;
 
       try {
-        handleAliasPreferenceChange(key, alias || "");
+        validKeys.forEach((key) => handleAliasPreferenceChange(key, alias || ""));
         aliasHookOk = true;
       } catch (err) {
         peopleDebugError("Alias viewer hook failed", err);
       }
 
       try {
-        handleColorPreferenceChange(key, color || "#4b4b4b");
+        validKeys.forEach((key) => handleColorPreferenceChange(key, clearColor ? "" : (color || "#4b4b4b")));
         colorHookOk = true;
       } catch (err) {
         peopleDebugError("Color viewer hook failed", err);
       }
 
       if (aliasHookOk && colorHookOk) {
-        peopleDebugLog("Saved alias/color via viewer appearance hooks", { key });
+        peopleDebugLog(clearColor ? "Reset alias/color via viewer appearance hooks" : "Saved alias/color via viewer appearance hooks", { keys: validKeys });
         return;
       }
 
@@ -569,16 +614,24 @@
 
     const safeAlias = (alias || "").trim();
     if (safeAlias) {
-      aliases[key] = safeAlias;
+      validKeys.forEach((key) => {
+        aliases[key] = safeAlias;
+      });
     } else {
-      delete aliases[key];
+      validKeys.forEach((key) => {
+        delete aliases[key];
+      });
     }
 
     const safeColor = (color || "").trim();
-    if (/^#[0-9a-fA-F]{6}$/.test(safeColor)) {
-      colors[key] = safeColor.toLowerCase();
+    if (!clearColor && /^#[0-9a-fA-F]{6}$/.test(safeColor)) {
+      validKeys.forEach((key) => {
+        colors[key] = safeColor.toLowerCase();
+      });
     } else {
-      delete colors[key];
+      validKeys.forEach((key) => {
+        delete colors[key];
+      });
     }
 
     const saveResp = await fetch(apiUrl("/api/preferences"), {
@@ -589,6 +642,27 @@
     peopleDebugLog("Saved alias/color preferences", { status: saveResp.status, ok: saveResp.ok });
     if (!saveResp.ok) {
       throw new Error(`Failed to save appearance preferences: ${saveResp.status}`);
+    }
+  }
+
+
+  async function resetPersonModal() {
+    if (!activePersonKey) return;
+    try {
+      await saveAliasAndColorPreference(activePersonKey, "", "", true);
+      const cfg = personConfigFor(activePersonKey);
+      cfg.service = "";
+      cfg.enabled = false;
+      cfg.critical = false;
+      notificationPersonConfig.set(activePersonKey, cfg);
+      await persistNotificationPersonSettings();
+      renderPersonSettingsList();
+      closePersonModal();
+      setNotificationStatus("Person reset to defaults.");
+    } catch (err) {
+      debugError("Failed to reset person settings", err);
+      peopleDebugError("Failed to reset person settings", err);
+      setNotificationStatus(err.message || "Failed to reset person settings", true);
     }
   }
 
@@ -758,6 +832,9 @@
     debugLog("Notification panel initialised");
 
     q("#notifPersonCancel")?.addEventListener("click", closePersonModal);
+    q("#notifPersonReset")?.addEventListener("click", resetPersonModal);
+    q("#notifPersonEnabled")?.addEventListener("change", updatePersonNotificationFields);
+    q("#notifPersonColor")?.addEventListener("input", updatePersonColorPreview);
     document.addEventListener("click", (event) => {
       const target = event.target instanceof Element ? event.target : null;
       const saveButton = target ? target.closest("#notifPersonSave") : null;

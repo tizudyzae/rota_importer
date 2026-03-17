@@ -372,14 +372,18 @@
 <body>
   <button class="settings-toggle" id="btnToggleSettings" type="button" aria-label="Show settings panel" aria-expanded="false">⚙️</button>
   <div class="panel panel-static settings-panel" id="savedWeeksPanel" hidden aria-hidden="true">
-    <h2 class="panel-title">Saved weeks</h2>
-    <p class="control-hint">Upload new schedules and manage the saved weeks stored on this device.</p>
-    <input type="file" id="fileInput" accept=".csv,text/csv" class="visually-hidden">
-    <div class="saved-week-actions">
-      <button class="btn btn-secondary" id="btnUpload" type="button">Upload CSV</button>
-    </div>
-    <div id="settingsWeekList" class="settings-week-list" role="list" aria-label="Saved weeks"></div>
-    <p class="saved-week-meta" id="settingsWeekMeta" hidden></p>
+    <details class="control-section ha-settings-section" id="savedWeeksSection">
+      <summary>Saved Weeks</summary>
+      <div class="control-section-body">
+        <p class="control-hint">Upload new schedules and manage the saved weeks stored on this device.</p>
+        <input type="file" id="fileInput" accept=".csv,text/csv" class="visually-hidden">
+        <div class="saved-week-actions">
+          <button class="btn btn-secondary" id="btnUpload" type="button">Upload CSV</button>
+        </div>
+        <div id="settingsWeekList" class="settings-week-list" role="list" aria-label="Saved weeks"></div>
+        <p class="saved-week-meta" id="settingsWeekMeta" hidden></p>
+      </div>
+    </details>
     <div id="appearanceControls" class="appearance-controls" hidden aria-hidden="true" role="group"></div>
   </div>
   <div class="wrap">

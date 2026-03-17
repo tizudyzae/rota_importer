@@ -485,11 +485,25 @@
       cfg.enabled = Boolean(q("#notifPersonEnabled")?.checked) && Boolean(cfg.service);
       cfg.critical = Boolean(q("#notifPersonCritical")?.checked);
       notificationPersonConfig.set(activePersonKey, cfg);
+      await persistNotificationSettings();
       renderPersonSettingsList();
       closePersonModal();
       setNotificationStatus("Person settings saved.");
     } catch (err) {
       setNotificationStatus(err.message || "Failed to save person settings", true);
+    }
+  }
+
+  async function persistNotificationSettings() {
+    const payload = getNotificationPayloadFromForm();
+    const resp = await fetch(apiUrl("/api/notification_settings"), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(text || `Save failed: ${resp.status}`);
     }
   }
 
@@ -615,16 +629,7 @@
 
     q("#notifSave")?.addEventListener("click", async () => {
       try {
-        const payload = getNotificationPayloadFromForm();
-        const resp = await fetch(apiUrl("/api/notification_settings"), {
-          method: "PUT",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload),
-        });
-        if (!resp.ok) {
-          const text = await resp.text();
-          throw new Error(text || `Save failed: ${resp.status}`);
-        }
+        await persistNotificationSettings();
         await refreshNotificationPreview();
         await refreshNotificationDebugLog();
         setNotificationStatus("Notification settings saved.");

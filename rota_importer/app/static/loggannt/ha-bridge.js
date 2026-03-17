@@ -347,16 +347,7 @@
       (el.dataset.day || "").trim().toLowerCase()
     );
 
-    const subjectServiceMap = {};
-    const subjectCriticalMap = {};
-    const subjectNames = [];
-    notificationSubjects.forEach((subject) => {
-      const cfg = personConfigFor(subject);
-      if (!cfg.service) return;
-      subjectServiceMap[subject] = cfg.service;
-      subjectCriticalMap[subject] = Boolean(cfg.critical);
-      if (cfg.enabled) subjectNames.push(subject);
-    });
+    const { subjectServiceMap, subjectCriticalMap, subjectNames } = buildNotificationPersonMaps();
 
     return {
       enabled: Boolean(q("#notifEnabled")?.checked),
@@ -371,6 +362,20 @@
       image_url: q("#notifImage")?.value?.trim() || "",
       extra_data: extraData,
     };
+  }
+
+  function buildNotificationPersonMaps() {
+    const subjectServiceMap = {};
+    const subjectCriticalMap = {};
+    const subjectNames = [];
+    notificationSubjects.forEach((subject) => {
+      const cfg = personConfigFor(subject);
+      if (!cfg.service) return;
+      subjectServiceMap[subject] = cfg.service;
+      subjectCriticalMap[subject] = Boolean(cfg.critical);
+      if (cfg.enabled) subjectNames.push(subject);
+    });
+    return { subjectServiceMap, subjectCriticalMap, subjectNames };
   }
 
   function renderPersonSettingsList() {
@@ -485,12 +490,44 @@
       cfg.enabled = Boolean(q("#notifPersonEnabled")?.checked) && Boolean(cfg.service);
       cfg.critical = Boolean(q("#notifPersonCritical")?.checked);
       notificationPersonConfig.set(activePersonKey, cfg);
-      await persistNotificationSettings();
+      await persistNotificationPersonSettings();
       renderPersonSettingsList();
       closePersonModal();
       setNotificationStatus("Person settings saved.");
     } catch (err) {
       setNotificationStatus(err.message || "Failed to save person settings", true);
+    }
+  }
+
+  async function persistNotificationPersonSettings() {
+    const existingResp = await fetch(apiUrl("/api/notification_settings"), { cache: "no-store" });
+    if (!existingResp.ok) {
+      throw new Error(`Failed to load current settings: ${existingResp.status}`);
+    }
+    const existing = await existingResp.json();
+    const { subjectServiceMap, subjectCriticalMap, subjectNames } = buildNotificationPersonMaps();
+    const payload = {
+      enabled: Boolean(existing.enabled),
+      notify_before_end_enabled: Boolean(existing.notify_before_end_enabled),
+      subject_names: subjectNames,
+      subject_service_map: subjectServiceMap,
+      subject_critical_map: subjectCriticalMap,
+      weekdays: Array.isArray(existing.weekdays) ? existing.weekdays : [],
+      title_template: existing.title_template || "",
+      message_template: existing.message_template || "",
+      sound: existing.sound || "",
+      image_url: existing.image_url || "",
+      extra_data: existing.extra_data && typeof existing.extra_data === "object" && !Array.isArray(existing.extra_data) ? existing.extra_data : {},
+    };
+
+    const resp = await fetch(apiUrl("/api/notification_settings"), {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!resp.ok) {
+      const text = await resp.text();
+      throw new Error(text || `Save failed: ${resp.status}`);
     }
   }
 

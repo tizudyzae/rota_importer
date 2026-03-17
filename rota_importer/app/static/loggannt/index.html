@@ -4275,6 +4275,7 @@
           const model=week.model;
           const perDay=Array.isArray(week.perDay)?week.perDay:[];
           const dayHeaders=Array.isArray(model.dayHeaders)?model.dayHeaders:[];
+          const dateRangeLabel=resolveDateRangeLabelForWeek(model,week.metadata,layout) || '';
           const lookup=buildDisplayNameLookup(model);
           const selectionRecords=getSelectionRecords(model);
           const selectedRows=selectionRecords.map(item=>item.row);
@@ -4354,6 +4355,7 @@
       const layout=currentLayout || DEFAULT_LAYOUT;
       const palette=buildPdfPalette(layout);
       const dayHeaders=Array.isArray(model.dayHeaders)?model.dayHeaders:[];
+      const dateRangeLabel=resolveDateRangeLabelForWeek(model,week.metadata,layout) || '';
       const dateOrder=(week.metadata && week.metadata.dateOrder)||inferDateOrder(dayHeaders,model);
       const dayRows=[];
       if(!dayHeaders.length){

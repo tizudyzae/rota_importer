@@ -439,6 +439,14 @@
     const key = `raw:${(name || "").trim().toLowerCase()}`;
     if (!key || key === "raw:") return;
 
+    console.log("[PeopleSettings] Saving alias/color", {
+      name,
+      key,
+      alias,
+      color,
+      usingViewerFns: canUseViewerAppearanceFns(),
+    });
+
     if (canUseViewerAppearanceFns()) {
       handleAliasPreferenceChange(key, alias || "");
       handleColorPreferenceChange(key, color || "#4b4b4b");
@@ -446,6 +454,7 @@
     }
 
     const resp = await fetch(apiUrl("/api/preferences"), { cache: "no-store" });
+    console.log("[PeopleSettings] Loaded existing appearance preferences", { status: resp.status, ok: resp.ok });
     if (!resp.ok) {
       throw new Error(`Failed to load appearance preferences: ${resp.status}`);
     }
@@ -472,6 +481,7 @@
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ colors, aliases }),
     });
+    console.log("[PeopleSettings] Saved alias/color preferences", { status: saveResp.status, ok: saveResp.ok });
     if (!saveResp.ok) {
       throw new Error(`Failed to save appearance preferences: ${saveResp.status}`);
     }
@@ -480,6 +490,7 @@
   async function savePersonModal() {
     if (!activePersonKey) return;
     try {
+      console.log("[PeopleSettings] Save button clicked for person", { activePersonKey });
       await saveAliasAndColorPreference(
         activePersonKey,
         q("#notifPersonAlias")?.value || "",
@@ -489,18 +500,27 @@
       cfg.service = q("#notifPersonService")?.value?.trim() || "";
       cfg.enabled = Boolean(q("#notifPersonEnabled")?.checked) && Boolean(cfg.service);
       cfg.critical = Boolean(q("#notifPersonCritical")?.checked);
+      console.log("[PeopleSettings] Persisting person config", {
+        activePersonKey,
+        service: cfg.service,
+        enabled: cfg.enabled,
+        critical: cfg.critical,
+      });
       notificationPersonConfig.set(activePersonKey, cfg);
       await persistNotificationPersonSettings();
       renderPersonSettingsList();
       closePersonModal();
       setNotificationStatus("Person settings saved.");
+      console.log("[PeopleSettings] Person settings saved successfully", { activePersonKey });
     } catch (err) {
+      console.error("[PeopleSettings] Failed to save person settings", err);
       setNotificationStatus(err.message || "Failed to save person settings", true);
     }
   }
 
   async function persistNotificationPersonSettings() {
     const existingResp = await fetch(apiUrl("/api/notification_settings"), { cache: "no-store" });
+    console.log("[PeopleSettings] Loaded existing notification settings", { status: existingResp.status, ok: existingResp.ok });
     if (!existingResp.ok) {
       throw new Error(`Failed to load current settings: ${existingResp.status}`);
     }
@@ -520,11 +540,14 @@
       extra_data: existing.extra_data && typeof existing.extra_data === "object" && !Array.isArray(existing.extra_data) ? existing.extra_data : {},
     };
 
+    console.log("[PeopleSettings] Saving merged notification settings payload", payload);
+
     const resp = await fetch(apiUrl("/api/notification_settings"), {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
+    console.log("[PeopleSettings] Saved notification settings response", { status: resp.status, ok: resp.ok });
     if (!resp.ok) {
       const text = await resp.text();
       throw new Error(text || `Save failed: ${resp.status}`);
@@ -619,6 +642,7 @@
 
     q("#notifPersonCancel")?.addEventListener("click", closePersonModal);
     q("#notifPersonSave")?.addEventListener("click", () => {
+      console.log("[PeopleSettings] notifPersonSave button click handler fired");
       savePersonModal();
     });
     q("#notifPersonModal")?.addEventListener("click", (event) => {

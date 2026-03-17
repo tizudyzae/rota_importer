@@ -489,10 +489,14 @@
     q("#notifPersonAlias").value = getAliasPreferenceByKey(key) || "";
     q("#notifPersonColor").value = getColorPreferenceByKey(key) || "#4b4b4b";
     const serviceSelect = q("#notifPersonService");
+    const noneOption = '<option value="">No notify service</option>';
     serviceSelect.innerHTML = notificationServices.length
-      ? notificationServices.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join("")
-      : '<option value="">No notify services available</option>';
+      ? `${noneOption}${notificationServices.map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join("")}`
+      : `${noneOption}<option value="" disabled>No notify services available</option>`;
     serviceSelect.value = cfg.service || "";
+    if (serviceSelect.value !== (cfg.service || "")) {
+      serviceSelect.value = "";
+    }
     q("#notifPersonEnabled").checked = Boolean(cfg.enabled);
     q("#notifPersonCritical").checked = Boolean(cfg.critical);
     modal.hidden = false;
@@ -526,14 +530,32 @@
     });
 
     if (canUseViewerAppearanceFns()) {
+      let aliasHookOk = false;
+      let colorHookOk = false;
+
       try {
         handleAliasPreferenceChange(key, alias || "");
+        aliasHookOk = true;
+      } catch (err) {
+        peopleDebugError("Alias viewer hook failed", err);
+      }
+
+      try {
         handleColorPreferenceChange(key, color || "#4b4b4b");
+        colorHookOk = true;
+      } catch (err) {
+        peopleDebugError("Color viewer hook failed", err);
+      }
+
+      if (aliasHookOk && colorHookOk) {
         peopleDebugLog("Saved alias/color via viewer appearance hooks", { key });
         return;
-      } catch (err) {
-        peopleDebugError("Viewer appearance hooks failed, falling back to backend preferences API", err);
       }
+
+      peopleDebugLog("Viewer hooks incomplete, falling back to backend preferences API", {
+        aliasHookOk,
+        colorHookOk,
+      });
     }
 
     const resp = await fetch(apiUrl("/api/preferences"), { cache: "no-store" });
@@ -755,7 +777,9 @@
     });
 
     q("#notifPersonModal")?.addEventListener("click", (event) => {
-      if (event.target && event.target.id === "notifPersonModal") closePersonModal();
+      if (event.target && event.target.id === "notifPersonModal") {
+        peopleDebugLog("Ignored backdrop click to prevent accidental modal close");
+      }
     });
 
     const [settingsResp, servicesResp, subjectsResp] = await Promise.all([

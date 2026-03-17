@@ -579,18 +579,14 @@
       }
 
       try {
-        if (clearColor) {
-          colorHookOk = false;
-        } else {
-          handleColorPreferenceChange(key, color || "#4b4b4b");
-          colorHookOk = true;
-        }
+        handleColorPreferenceChange(key, clearColor ? "" : (color || "#4b4b4b"));
+        colorHookOk = true;
       } catch (err) {
         peopleDebugError("Color viewer hook failed", err);
       }
 
-      if (aliasHookOk && colorHookOk && !clearColor) {
-        peopleDebugLog("Saved alias/color via viewer appearance hooks", { key });
+      if (aliasHookOk && colorHookOk) {
+        peopleDebugLog(clearColor ? "Reset alias/color via viewer appearance hooks" : "Saved alias/color via viewer appearance hooks", { key });
         return;
       }
 

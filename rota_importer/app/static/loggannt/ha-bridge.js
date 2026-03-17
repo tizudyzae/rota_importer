@@ -526,9 +526,14 @@
     });
 
     if (canUseViewerAppearanceFns()) {
-      handleAliasPreferenceChange(key, alias || "");
-      handleColorPreferenceChange(key, color || "#4b4b4b");
-      return;
+      try {
+        handleAliasPreferenceChange(key, alias || "");
+        handleColorPreferenceChange(key, color || "#4b4b4b");
+        peopleDebugLog("Saved alias/color via viewer appearance hooks", { key });
+        return;
+      } catch (err) {
+        peopleDebugError("Viewer appearance hooks failed, falling back to backend preferences API", err);
+      }
     }
 
     const resp = await fetch(apiUrl("/api/preferences"), { cache: "no-store" });

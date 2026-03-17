@@ -555,13 +555,20 @@
     );
   }
 
+  function buildPersonPreferenceKeys(name) {
+    const normalized = (name || "").trim().toLowerCase();
+    if (!normalized) return [];
+    return Array.from(new Set([`raw:${normalized}`, `clean:${normalized}`]));
+  }
+
   async function saveAliasAndColorPreference(name, alias, color, clearColor = false) {
-    const key = `raw:${(name || "").trim().toLowerCase()}`;
-    if (!key || key === "raw:") return;
+    const keys = clearColor ? buildPersonPreferenceKeys(name) : [`raw:${(name || "").trim().toLowerCase()}`];
+    const validKeys = keys.filter((key) => key && key !== "raw:" && key !== "clean:");
+    if (!validKeys.length) return;
 
     peopleDebugLog("Saving alias/color", {
       name,
-      key,
+      keys: validKeys,
       alias,
       color,
       usingViewerFns: canUseViewerAppearanceFns(),
@@ -572,21 +579,21 @@
       let colorHookOk = false;
 
       try {
-        handleAliasPreferenceChange(key, alias || "");
+        validKeys.forEach((key) => handleAliasPreferenceChange(key, alias || ""));
         aliasHookOk = true;
       } catch (err) {
         peopleDebugError("Alias viewer hook failed", err);
       }
 
       try {
-        handleColorPreferenceChange(key, clearColor ? "" : (color || "#4b4b4b"));
+        validKeys.forEach((key) => handleColorPreferenceChange(key, clearColor ? "" : (color || "#4b4b4b")));
         colorHookOk = true;
       } catch (err) {
         peopleDebugError("Color viewer hook failed", err);
       }
 
       if (aliasHookOk && colorHookOk) {
-        peopleDebugLog(clearColor ? "Reset alias/color via viewer appearance hooks" : "Saved alias/color via viewer appearance hooks", { key });
+        peopleDebugLog(clearColor ? "Reset alias/color via viewer appearance hooks" : "Saved alias/color via viewer appearance hooks", { keys: validKeys });
         return;
       }
 
@@ -607,16 +614,24 @@
 
     const safeAlias = (alias || "").trim();
     if (safeAlias) {
-      aliases[key] = safeAlias;
+      validKeys.forEach((key) => {
+        aliases[key] = safeAlias;
+      });
     } else {
-      delete aliases[key];
+      validKeys.forEach((key) => {
+        delete aliases[key];
+      });
     }
 
     const safeColor = (color || "").trim();
     if (!clearColor && /^#[0-9a-fA-F]{6}$/.test(safeColor)) {
-      colors[key] = safeColor.toLowerCase();
+      validKeys.forEach((key) => {
+        colors[key] = safeColor.toLowerCase();
+      });
     } else {
-      delete colors[key];
+      validKeys.forEach((key) => {
+        delete colors[key];
+      });
     }
 
     const saveResp = await fetch(apiUrl("/api/preferences"), {

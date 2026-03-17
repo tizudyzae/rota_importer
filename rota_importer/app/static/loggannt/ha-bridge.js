@@ -4,6 +4,73 @@
   const STORAGE_SELECTION_KEY = "loggannt.rotas.selection";
   const RELOAD_FLAG = "loggannt.ha.synced.once";
 
+  const clientDebugEvents = [];
+  const peopleDebugEvents = [];
+
+  function appendPeopleDebugLine(level, message, data) {
+    const timestamp = new Date().toISOString();
+    const suffix = data === undefined ? "" : ` ${JSON.stringify(data)}`;
+    const line = `[${timestamp}] [${level}] ${message}${suffix}`;
+    peopleDebugEvents.push(line);
+    if (peopleDebugEvents.length > 250) peopleDebugEvents.shift();
+    const root = document.getElementById("notifPeopleDebugLog");
+    if (root) root.textContent = peopleDebugEvents.join("\n");
+  }
+
+  function peopleDebugLog(message, data) {
+    appendPeopleDebugLine("INFO", message, data);
+    if (data === undefined) {
+      console.log(`[PeopleSettingsOnly] ${message}`);
+      return;
+    }
+    console.log(`[PeopleSettingsOnly] ${message}`, data);
+  }
+
+  function peopleDebugError(message, err) {
+    appendPeopleDebugLine("ERROR", message, {
+      message: err && err.message ? err.message : String(err),
+      stack: err && err.stack ? err.stack : "",
+    });
+    console.error(`[PeopleSettingsOnly] ${message}`, err);
+  }
+
+  function appendClientDebugLine(level, message, data) {
+    const timestamp = new Date().toISOString();
+    const suffix = data === undefined ? "" : ` ${JSON.stringify(data)}`;
+    const line = `[${timestamp}] [${level}] ${message}${suffix}`;
+    clientDebugEvents.push(line);
+    if (clientDebugEvents.length > 250) clientDebugEvents.shift();
+    const root = document.getElementById("notifClientDebugLog");
+    if (root) root.textContent = clientDebugEvents.join("\n");
+  }
+
+  function debugLog(message, data) {
+    appendClientDebugLine("INFO", message, data);
+    if (data === undefined) {
+      console.log(`[PeopleSettings] ${message}`);
+      return;
+    }
+    console.log(`[PeopleSettings] ${message}`, data);
+  }
+
+  function debugError(message, err) {
+    appendClientDebugLine("ERROR", message, {
+      message: err && err.message ? err.message : String(err),
+      stack: err && err.stack ? err.stack : "",
+    });
+    console.error(`[PeopleSettings] ${message}`, err);
+  }
+
+  window.addEventListener("error", (event) => {
+    debugError("Unhandled window error", event.error || event.message || "unknown error");
+  });
+
+  window.addEventListener("unhandledrejection", (event) => {
+    debugError("Unhandled promise rejection", event.reason || "unknown rejection");
+  });
+
+  debugLog("ha-bridge script loaded", { href: window.location.href });
+
   function q(sel, root = document) {
     return root.querySelector(sel);
   }
@@ -257,6 +324,10 @@
             <button class="btn btn-secondary" id="notifPersonCancel" type="button">Cancel</button>
             <button class="btn btn-primary" id="notifPersonSave" type="button">Save</button>
           </div>
+          <div class="control-group">
+            <label>People settings debug</label>
+            <pre class="ha-preview" id="notifPeopleDebugLog" aria-live="polite"></pre>
+          </div>
         </div>
       </div>
       <div class="control-group">
@@ -295,8 +366,13 @@
         <button class="btn btn-secondary" id="notifRefreshDebug" type="button">Refresh debug log</button>
         <div class="ha-debug-log" id="notifDebugLog" aria-live="polite"></div>
       </div>
+      <div class="control-group">
+        <label>Client debug log</label>
+        <pre class="ha-preview" id="notifClientDebugLog" aria-live="polite"></pre>
+      </div>
     `;
     panel.appendChild(wrapper);
+    appendClientDebugLine("INFO", "Notification panel DOM injected");
 
     const weekdays = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
     const weekdaysRoot = q("#notifWeekdays", wrapper);
@@ -403,6 +479,8 @@
 
   function openPersonModal(subject) {
     activePersonKey = subject;
+    debugLog("Opening person modal", { subject });
+    peopleDebugLog("Opening person modal", { subject });
     const modal = q("#notifPersonModal");
     if (!modal) return;
     const cfg = personConfigFor(subject);
@@ -439,13 +517,27 @@
     const key = `raw:${(name || "").trim().toLowerCase()}`;
     if (!key || key === "raw:") return;
 
+    peopleDebugLog("Saving alias/color", {
+      name,
+      key,
+      alias,
+      color,
+      usingViewerFns: canUseViewerAppearanceFns(),
+    });
+
     if (canUseViewerAppearanceFns()) {
-      handleAliasPreferenceChange(key, alias || "");
-      handleColorPreferenceChange(key, color || "#4b4b4b");
-      return;
+      try {
+        handleAliasPreferenceChange(key, alias || "");
+        handleColorPreferenceChange(key, color || "#4b4b4b");
+        peopleDebugLog("Saved alias/color via viewer appearance hooks", { key });
+        return;
+      } catch (err) {
+        peopleDebugError("Viewer appearance hooks failed, falling back to backend preferences API", err);
+      }
     }
 
     const resp = await fetch(apiUrl("/api/preferences"), { cache: "no-store" });
+    peopleDebugLog("Loaded existing appearance preferences", { status: resp.status, ok: resp.ok });
     if (!resp.ok) {
       throw new Error(`Failed to load appearance preferences: ${resp.status}`);
     }
@@ -472,14 +564,22 @@
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ colors, aliases }),
     });
+    peopleDebugLog("Saved alias/color preferences", { status: saveResp.status, ok: saveResp.ok });
     if (!saveResp.ok) {
       throw new Error(`Failed to save appearance preferences: ${saveResp.status}`);
     }
   }
 
   async function savePersonModal() {
-    if (!activePersonKey) return;
+    if (!activePersonKey) {
+      debugError("Save attempted without an active person", new Error("No activePersonKey"));
+      peopleDebugError("Save attempted without an active person", new Error("No activePersonKey"));
+      setNotificationStatus("Save failed: no person selected", true);
+      return;
+    }
     try {
+      debugLog("Save button clicked for person", { activePersonKey });
+      peopleDebugLog("Save button clicked for person", { activePersonKey });
       await saveAliasAndColorPreference(
         activePersonKey,
         q("#notifPersonAlias")?.value || "",
@@ -489,18 +589,29 @@
       cfg.service = q("#notifPersonService")?.value?.trim() || "";
       cfg.enabled = Boolean(q("#notifPersonEnabled")?.checked) && Boolean(cfg.service);
       cfg.critical = Boolean(q("#notifPersonCritical")?.checked);
+      peopleDebugLog("Persisting person config", {
+        activePersonKey,
+        service: cfg.service,
+        enabled: cfg.enabled,
+        critical: cfg.critical,
+      });
       notificationPersonConfig.set(activePersonKey, cfg);
       await persistNotificationPersonSettings();
       renderPersonSettingsList();
       closePersonModal();
       setNotificationStatus("Person settings saved.");
+      debugLog("Person settings saved successfully", { activePersonKey });
+      peopleDebugLog("Person settings saved successfully", { activePersonKey });
     } catch (err) {
+      debugError("Failed to save person settings", err);
+      peopleDebugError("Failed to save person settings", err);
       setNotificationStatus(err.message || "Failed to save person settings", true);
     }
   }
 
   async function persistNotificationPersonSettings() {
     const existingResp = await fetch(apiUrl("/api/notification_settings"), { cache: "no-store" });
+    peopleDebugLog("Loaded existing notification settings", { status: existingResp.status, ok: existingResp.ok });
     if (!existingResp.ok) {
       throw new Error(`Failed to load current settings: ${existingResp.status}`);
     }
@@ -520,11 +631,14 @@
       extra_data: existing.extra_data && typeof existing.extra_data === "object" && !Array.isArray(existing.extra_data) ? existing.extra_data : {},
     };
 
+    peopleDebugLog("Saving merged notification settings payload", payload);
+
     const resp = await fetch(apiUrl("/api/notification_settings"), {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(payload),
     });
+    peopleDebugLog("Saved notification settings response", { status: resp.status, ok: resp.ok });
     if (!resp.ok) {
       const text = await resp.text();
       throw new Error(text || `Save failed: ${resp.status}`);
@@ -615,12 +729,31 @@
   async function initNotificationPanel() {
     injectNotificationPanel();
     hideLegacyAppearanceControls();
-    if (!q("#haNotificationPanel")) return;
+    if (!q("#haNotificationPanel")) {
+      console.warn("[PeopleSettings] Notification panel not found after injection");
+      return;
+    }
+    debugLog("Notification panel initialised");
 
     q("#notifPersonCancel")?.addEventListener("click", closePersonModal);
-    q("#notifPersonSave")?.addEventListener("click", () => {
+    document.addEventListener("click", (event) => {
+      const target = event.target instanceof Element ? event.target : null;
+      const saveButton = target ? target.closest("#notifPersonSave") : null;
+      if (!saveButton) return;
+      event.preventDefault();
+      event.stopPropagation();
+      debugLog("notifPersonSave delegated click handler fired");
+      peopleDebugLog("notifPersonSave delegated click handler fired");
+      savePersonModal();
+    }, true);
+    q("#notifPersonSave")?.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      debugLog("notifPersonSave direct click handler fired");
+      peopleDebugLog("notifPersonSave direct click handler fired");
       savePersonModal();
     });
+
     q("#notifPersonModal")?.addEventListener("click", (event) => {
       if (event.target && event.target.id === "notifPersonModal") closePersonModal();
     });

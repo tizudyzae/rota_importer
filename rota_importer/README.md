@@ -185,6 +185,8 @@ The chart image is a generated line chart showing staffing counts across the day
 
 In the **People Settings** popup, each person now shows a ready-to-copy **Per-person ICS link** field so you can paste it directly into subscription-capable calendar/person settings.
 
+For iPhone calendar subscriptions, the URL must be a full externally reachable URL (not a relative path) and must not require an interactive Home Assistant login page during fetch.
+
 ### External access with Nabu Casa
 
 If your add-on URL is externally reachable through Home Assistant Cloud/Nabu Casa, the same `.ics` URL can be used from outside your home. Use your Home Assistant external URL/proxy path and make sure access is protected as needed for your setup.

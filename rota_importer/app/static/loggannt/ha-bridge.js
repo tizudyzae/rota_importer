@@ -388,7 +388,7 @@
               <button class="btn btn-secondary" id="notifPersonIcsCopy" type="button">Copy</button>
               <a class="btn btn-secondary" id="notifPersonIcsOpen" href="#" target="_blank" rel="noopener noreferrer">Open</a>
             </div>
-            <div class="person-ics-help">Use this URL in calendar subscription fields.</div>
+            <div class="person-ics-help">Use this full URL in calendar subscription fields. If iOS says validation failed, ensure the URL is externally reachable without an interactive Home Assistant login.</div>
           </div>
           <div class="person-modal-actions">
             <button class="btn btn-secondary" id="notifPersonReset" type="button">Reset to defaults</button>
@@ -577,7 +577,12 @@
   function buildPersonIcsUrl(personName) {
     const person = (personName || "").trim();
     if (!person) return "";
-    return apiUrl(`/api/people/${encodeURIComponent(person)}/calendar.ics`);
+    const relative = apiUrl(`/api/people/${encodeURIComponent(person)}/calendar.ics`);
+    try {
+      return new URL(relative, window.location.origin).toString();
+    } catch {
+      return relative;
+    }
   }
 
   function refreshPersonIcsLink(personName) {

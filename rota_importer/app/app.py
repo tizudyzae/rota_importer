@@ -618,6 +618,33 @@ def icalendar_escape(value: str) -> str:
     )
 
 
+def fold_ical_line(line: str, limit: int = 75) -> list[str]:
+    encoded = line.encode("utf-8")
+    if len(encoded) <= limit:
+        return [line]
+
+    folded: list[str] = []
+    remaining = line
+    while remaining:
+        chunk = remaining
+        while len(chunk.encode("utf-8")) > limit and len(chunk) > 1:
+            chunk = chunk[:-1]
+        if not chunk:
+            break
+        folded.append(chunk)
+        remaining = remaining[len(chunk):]
+        if remaining:
+            remaining = f" {remaining}"
+    return folded
+
+
+def finalize_ical_lines(lines: list[str]) -> str:
+    folded_lines: list[str] = []
+    for line in lines:
+        folded_lines.extend(fold_ical_line(line))
+    return "\r\n".join(folded_lines) + "\r\n"
+
+
 def get_latest_upload_id_for_person(person_name: str) -> Optional[int]:
     with get_conn() as conn:
         row = conn.execute(
@@ -2399,7 +2426,7 @@ def api_person_calendar(person_name: str, request: Request, upload_id: Optional[
         )
 
     lines.append("END:VCALENDAR")
-    payload = "\r\n".join(lines) + "\r\n"
+    payload = finalize_ical_lines(lines)
     filename = f"{re.sub(r'[^a-zA-Z0-9_-]+', '_', person_key)}.ics"
     headers = {"Content-Disposition": f'inline; filename="{filename}"'}
     return PlainTextResponse(content=payload, media_type="text/calendar; charset=utf-8", headers=headers)

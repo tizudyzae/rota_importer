@@ -281,6 +281,9 @@
       .person-modal-actions .btn:first-child{margin-right:auto}
       .person-color-preview{height:44px;border-radius:10px;border:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-weight:700}
       .person-notify-settings[hidden]{display:none !important}
+      .person-ics-row{display:grid;grid-template-columns:1fr auto auto;gap:8px;align-items:center}
+      .person-ics-row input{font-size:12px}
+      .person-ics-help{font-size:11px;color:var(--muted);margin-top:4px}
       .ha-debug-log{background:#fff;border:1px solid var(--border);border-radius:10px;padding:10px;font-size:12px;max-height:220px;overflow:auto}
       .ha-debug-log-item{padding:6px 0;border-bottom:1px solid var(--border)}
       .ha-debug-log-item:last-child{border-bottom:none}
@@ -377,6 +380,15 @@
             <label for="notifPersonService">Notify service</label>
             <select id="notifPersonService"></select>
             <label><input id="notifPersonCritical" type="checkbox"> Critical sound</label>
+          </div>
+          <div class="control-group">
+            <label for="notifPersonIcsUrl">Per-person ICS link</label>
+            <div class="person-ics-row">
+              <input id="notifPersonIcsUrl" type="text" readonly>
+              <button class="btn btn-secondary" id="notifPersonIcsCopy" type="button">Copy</button>
+              <a class="btn btn-secondary" id="notifPersonIcsOpen" href="#" target="_blank" rel="noopener noreferrer">Open</a>
+            </div>
+            <div class="person-ics-help">Use this URL in calendar subscription fields.</div>
           </div>
           <div class="person-modal-actions">
             <button class="btn btn-secondary" id="notifPersonReset" type="button">Reset to defaults</button>
@@ -535,6 +547,7 @@
     }
     q("#notifPersonEnabled").checked = Boolean(cfg.enabled);
     q("#notifPersonCritical").checked = Boolean(cfg.critical);
+    refreshPersonIcsLink(subject);
     updatePersonNotificationFields();
     updatePersonColorPreview();
     modal.hidden = false;
@@ -559,6 +572,20 @@
     const normalized = (name || "").trim().toLowerCase();
     if (!normalized) return [];
     return Array.from(new Set([`raw:${normalized}`, `clean:${normalized}`]));
+  }
+
+  function buildPersonIcsUrl(personName) {
+    const person = (personName || "").trim();
+    if (!person) return "";
+    return apiUrl(`/api/people/${encodeURIComponent(person)}/calendar.ics`);
+  }
+
+  function refreshPersonIcsLink(personName) {
+    const url = buildPersonIcsUrl(personName);
+    const input = q("#notifPersonIcsUrl");
+    const openLink = q("#notifPersonIcsOpen");
+    if (input) input.value = url;
+    if (openLink) openLink.href = url || "#";
   }
 
   async function saveAliasAndColorPreference(name, alias, color, clearColor = false) {
@@ -835,6 +862,24 @@
     q("#notifPersonReset")?.addEventListener("click", resetPersonModal);
     q("#notifPersonEnabled")?.addEventListener("change", updatePersonNotificationFields);
     q("#notifPersonColor")?.addEventListener("input", updatePersonColorPreview);
+    q("#notifPersonIcsCopy")?.addEventListener("click", async () => {
+      const text = q("#notifPersonIcsUrl")?.value || "";
+      if (!text) return;
+      try {
+        if (navigator.clipboard && typeof navigator.clipboard.writeText === "function") {
+          await navigator.clipboard.writeText(text);
+        } else {
+          const input = q("#notifPersonIcsUrl");
+          if (input) {
+            input.select();
+            document.execCommand("copy");
+          }
+        }
+        setNotificationStatus("ICS link copied.");
+      } catch (err) {
+        setNotificationStatus("Failed to copy ICS link.", true);
+      }
+    });
     document.addEventListener("click", (event) => {
       const target = event.target instanceof Element ? event.target : null;
       const saveButton = target ? target.closest("#notifPersonSave") : null;

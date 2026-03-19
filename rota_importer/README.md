@@ -169,3 +169,20 @@ The key function is:
 - `parse_pdf_to_rows()`
 
 That is the bit you tune once you have 2 or 3 real rota samples.
+
+## Per-person ICS feeds
+
+This add-on now exposes per-person iCalendar feeds:
+
+- `GET /api/people/{person_name}/calendar.ics`
+- optional query: `upload_id=<id>` to pin to one upload (otherwise latest upload for that person)
+
+Each event includes an `ATTACH` URL to a per-day chart image endpoint:
+
+- `GET /api/people/{person_name}/charts/{YYYY-MM-DD}.png`
+
+The chart image is a generated line chart showing staffing counts across the day for that date.
+
+### External access with Nabu Casa
+
+If your add-on URL is externally reachable through Home Assistant Cloud/Nabu Casa, the same `.ics` URL can be used from outside your home. Use your Home Assistant external URL/proxy path and make sure access is protected as needed for your setup.

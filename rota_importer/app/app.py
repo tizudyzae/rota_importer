@@ -1,4 +1,5 @@
 import csv
+import io
 import json
 import os
 import re
@@ -10,10 +11,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib import error as urlerror
 from urllib import request as urlrequest
+from urllib.parse import quote
 
 import pdfplumber
+from PIL import Image, ImageDraw
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 
 APP_DIR = Path(__file__).resolve().parent
@@ -588,6 +591,180 @@ def format_uk_date(iso_date: str) -> str:
         return dt.strftime("%d/%m/%Y")
     except ValueError:
         return iso_date
+
+
+def sanitize_person_key(value: str) -> str:
+    return clean_cell(value).strip()
+
+
+def parse_iso_datetime_local(shift_date: str, hhmm: str) -> Optional[datetime]:
+    date_clean = clean_cell(shift_date)
+    time_clean = clean_cell(hhmm)
+    if not date_clean or not re.fullmatch(r"\d{2}:\d{2}", time_clean):
+        return None
+    try:
+        return datetime.strptime(f"{date_clean} {time_clean}", "%Y-%m-%d %H:%M")
+    except ValueError:
+        return None
+
+
+def icalendar_escape(value: str) -> str:
+    return (
+        str(value or "")
+        .replace("\\", "\\\\")
+        .replace("\n", "\\n")
+        .replace(",", "\\,")
+        .replace(";", "\\;")
+    )
+
+
+def fold_ical_line(line: str, limit: int = 75) -> list[str]:
+    encoded = line.encode("utf-8")
+    if len(encoded) <= limit:
+        return [line]
+
+    folded: list[str] = []
+    remaining = line
+    while remaining:
+        chunk = remaining
+        while len(chunk.encode("utf-8")) > limit and len(chunk) > 1:
+            chunk = chunk[:-1]
+        if not chunk:
+            break
+        folded.append(chunk)
+        remaining = remaining[len(chunk):]
+        if remaining:
+            remaining = f" {remaining}"
+    return folded
+
+
+def finalize_ical_lines(lines: list[str]) -> str:
+    folded_lines: list[str] = []
+    for line in lines:
+        folded_lines.extend(fold_ical_line(line))
+    return "\r\n".join(folded_lines) + "\r\n"
+
+
+def get_latest_upload_id_for_person(person_name: str) -> Optional[int]:
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT upload_id
+            FROM shifts
+            WHERE employee = ?
+            ORDER BY upload_id DESC
+            LIMIT 1
+            """,
+            (person_name,),
+        ).fetchone()
+    return row["upload_id"] if row else None
+
+
+def get_person_shifts(upload_id: int, person_name: str) -> list[sqlite3.Row]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT upload_id, employee, shift_date, day_name, day_header, raw_cell, start_time, end_time
+            FROM shifts
+            WHERE upload_id = ?
+              AND employee = ?
+            ORDER BY shift_date, start_time, id
+            """,
+            (upload_id, person_name),
+        ).fetchall()
+    return rows
+
+
+def get_day_shifts(upload_id: int, shift_date: str) -> list[sqlite3.Row]:
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT employee, start_time, end_time
+            FROM shifts
+            WHERE upload_id = ?
+              AND shift_date = ?
+              AND TRIM(COALESCE(start_time, '')) != ''
+              AND TRIM(COALESCE(end_time, '')) != ''
+            ORDER BY start_time, employee
+            """,
+            (upload_id, shift_date),
+        ).fetchall()
+    return rows
+
+
+def build_staffing_counts(day_rows: list[sqlite3.Row]) -> list[int]:
+    counts: list[int] = []
+    for hour in range(25):
+        minute_mark = hour * 60
+        active = 0
+        for row in day_rows:
+            start_minutes = hhmm_to_minutes(clean_cell(row["start_time"]))
+            end_minutes = hhmm_to_minutes(clean_cell(row["end_time"]))
+            if start_minutes is None or end_minutes is None:
+                continue
+            if end_minutes <= start_minutes:
+                end_minutes += 24 * 60
+                if minute_mark < start_minutes:
+                    minute_effective = minute_mark + 24 * 60
+                else:
+                    minute_effective = minute_mark
+            else:
+                minute_effective = minute_mark
+            if start_minutes <= minute_effective < end_minutes:
+                active += 1
+        counts.append(active)
+    return counts
+
+
+def render_line_chart_png(counts: list[int], title: str) -> bytes:
+    width, height = 920, 360
+    margin_left, margin_right = 64, 24
+    margin_top, margin_bottom = 42, 52
+    plot_width = width - margin_left - margin_right
+    plot_height = height - margin_top - margin_bottom
+    max_count = max(max(counts), 1)
+
+    image = Image.new("RGB", (width, height), "white")
+    draw = ImageDraw.Draw(image)
+
+    draw.text((margin_left, 12), clean_cell(title)[:120], fill="#111827")
+    draw.line(
+        (
+            margin_left,
+            margin_top,
+            margin_left,
+            margin_top + plot_height,
+            margin_left + plot_width,
+            margin_top + plot_height,
+        ),
+        fill="#6b7280",
+        width=2,
+    )
+
+    for y_tick in range(0, max_count + 1):
+        y = margin_top + plot_height - int((y_tick / max_count) * plot_height)
+        draw.line((margin_left, y, margin_left + plot_width, y), fill="#e5e7eb", width=1)
+        draw.text((8, y - 7), str(y_tick), fill="#4b5563")
+
+    for hour in range(0, 25, 2):
+        x = margin_left + int((hour / 24) * plot_width)
+        draw.line((x, margin_top + plot_height, x, margin_top + plot_height + 6), fill="#6b7280", width=1)
+        draw.text((x - 10, margin_top + plot_height + 10), f"{hour:02d}", fill="#4b5563")
+
+    points = []
+    for hour, count in enumerate(counts):
+        x = margin_left + int((hour / 24) * plot_width)
+        y = margin_top + plot_height - int((count / max_count) * plot_height)
+        points.append((x, y))
+
+    if len(points) >= 2:
+        draw.line(points, fill="#2563eb", width=3)
+    for x, y in points:
+        draw.ellipse((x - 3, y - 3, x + 3, y + 3), fill="#2563eb")
+
+    buff = io.BytesIO()
+    image.save(buff, format="PNG")
+    return buff.getvalue()
 
 
 def build_model_from_upload(upload_id: int) -> dict:
@@ -2185,6 +2362,96 @@ def api_notification_subjects():
             """
         ).fetchall()
     return JSONResponse({"subjects": [clean_cell(row["employee"]) for row in rows if clean_cell(row["employee"])]})
+
+
+@app.get("/api/people/{person_name}/calendar.ics")
+def api_person_calendar(person_name: str, request: Request, upload_id: Optional[int] = None):
+    person_key = sanitize_person_key(person_name)
+    if not person_key:
+        raise HTTPException(status_code=400, detail="Person name is required")
+
+    selected_upload_id = upload_id or get_latest_upload_id_for_person(person_key)
+    if not selected_upload_id:
+        raise HTTPException(status_code=404, detail="No shifts found for this person")
+
+    shifts = get_person_shifts(selected_upload_id, person_key)
+    if not shifts:
+        raise HTTPException(status_code=404, detail="No shifts found for this person in selected upload")
+
+    ingress = ingress_base(request)
+    external_base = str(request.base_url).rstrip("/")
+    base_url = f"{external_base}{ingress}" if ingress else external_base
+    now_utc = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    encoded_person = quote(person_key, safe="")
+
+    lines = [
+        "BEGIN:VCALENDAR",
+        "VERSION:2.0",
+        "PRODID:-//Rota Importer//Per Person Calendar//EN",
+        "CALSCALE:GREGORIAN",
+        "METHOD:PUBLISH",
+        f"X-WR-CALNAME:{icalendar_escape(person_key)} Rota",
+    ]
+
+    for row in shifts:
+        shift_date = clean_cell(row["shift_date"])
+        start_time = clean_cell(row["start_time"])
+        end_time = clean_cell(row["end_time"])
+        raw_cell = clean_cell(row["raw_cell"])
+        shift_start = parse_iso_datetime_local(shift_date, start_time)
+        shift_end = parse_iso_datetime_local(shift_date, end_time)
+        if not shift_start or not shift_end:
+            continue
+        if shift_end <= shift_start:
+            shift_end += timedelta(days=1)
+
+        uid = f"rota-{selected_upload_id}-{encoded_person}-{shift_date}-{start_time}-{end_time}@rota-importer"
+        attach_url = (
+            f"{base_url}/api/people/{encoded_person}/charts/{shift_date}.png"
+            f"?upload_id={selected_upload_id}"
+        )
+
+        lines.extend(
+            [
+                "BEGIN:VEVENT",
+                f"UID:{uid}",
+                f"DTSTAMP:{now_utc}",
+                f"DTSTART:{shift_start.strftime('%Y%m%dT%H%M%S')}",
+                f"DTEND:{shift_end.strftime('%Y%m%dT%H%M%S')}",
+                f"SUMMARY:{icalendar_escape(f'{person_key} shift')}",
+                f"DESCRIPTION:{icalendar_escape(raw_cell or f'{start_time}-{end_time}')}",
+                f"ATTACH;FMTTYPE=image/png:{attach_url}",
+                "END:VEVENT",
+            ]
+        )
+
+    lines.append("END:VCALENDAR")
+    payload = finalize_ical_lines(lines)
+    filename = f"{re.sub(r'[^a-zA-Z0-9_-]+', '_', person_key)}.ics"
+    headers = {"Content-Disposition": f'inline; filename="{filename}"'}
+    return PlainTextResponse(content=payload, media_type="text/calendar; charset=utf-8", headers=headers)
+
+
+@app.get("/api/people/{person_name}/charts/{shift_date}.png")
+def api_person_shift_chart(person_name: str, shift_date: str, upload_id: Optional[int] = None):
+    person_key = sanitize_person_key(person_name)
+    if not person_key:
+        raise HTTPException(status_code=400, detail="Person name is required")
+    if not re.fullmatch(r"\d{4}-\d{2}-\d{2}", clean_cell(shift_date)):
+        raise HTTPException(status_code=400, detail="shift_date must be YYYY-MM-DD")
+
+    selected_upload_id = upload_id or get_latest_upload_id_for_person(person_key)
+    if not selected_upload_id:
+        raise HTTPException(status_code=404, detail="No shifts found for this person")
+
+    person_rows = get_person_shifts(selected_upload_id, person_key)
+    if not any(clean_cell(row["shift_date"]) == shift_date for row in person_rows):
+        raise HTTPException(status_code=404, detail="No shift found for this person/date in selected upload")
+
+    day_rows = get_day_shifts(selected_upload_id, shift_date)
+    counts = build_staffing_counts(day_rows)
+    image_bytes = render_line_chart_png(counts, f"Team staffing • {shift_date}")
+    return Response(content=image_bytes, media_type="image/png")
 
 
 @app.post("/api/upload_pdf")

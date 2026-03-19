@@ -183,6 +183,8 @@ Each event includes an `ATTACH` URL to a per-day chart image endpoint:
 
 The chart image is a generated line chart showing staffing counts across the day for that date.
 
+In the **People Settings** popup, each person now shows a ready-to-copy **Per-person ICS link** field so you can paste it directly into subscription-capable calendar/person settings.
+
 ### External access with Nabu Casa
 
 If your add-on URL is externally reachable through Home Assistant Cloud/Nabu Casa, the same `.ics` URL can be used from outside your home. Use your Home Assistant external URL/proxy path and make sure access is protected as needed for your setup.

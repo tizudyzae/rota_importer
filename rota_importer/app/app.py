@@ -981,10 +981,21 @@ def join_human_names(names: List[str]) -> str:
     return f"{', '.join(cleaned[:-1])}, and {cleaned[-1]}"
 
 
+def personalize_name(name: str, subject_name: str, replacement: str = "you") -> str:
+    clean_name = clean_cell(name)
+    clean_subject = clean_cell(subject_name)
+    if clean_name and clean_subject and clean_name.lower() == clean_subject.lower():
+        return replacement
+    return clean_name
+
+
 def format_people_for_handover(
     people: List[dict],
     include_non_management_start: bool = False,
     aliases: Optional[dict[str, str]] = None,
+    subject_name: str = "",
+    subject_replacement: str = "you",
+    reference_start_time: str = "",
 ) -> str:
     labels = []
     for person in people:
@@ -993,15 +1004,27 @@ def format_people_for_handover(
         name = alias_for_name(clean_cell(person.get("employee")), aliases or {})
         if not name:
             continue
+        name = personalize_name(name, subject_name, replacement=subject_replacement)
         start_time = clean_cell(person.get("start_time"))
-        if include_non_management_start and start_time and not is_management_person(name):
+        show_start = (
+            include_non_management_start
+            and start_time
+            and not is_management_person(name)
+            and (not reference_start_time or start_time != reference_start_time)
+        )
+        if show_start:
             labels.append(f"{name} ({start_time})")
         else:
             labels.append(name)
     return join_human_names(labels)
 
 
-def build_shift_end_message(end_time: str, team_snapshot: dict, aliases: Optional[dict[str, str]] = None) -> str:
+def build_shift_end_message(
+    end_time: str,
+    team_snapshot: dict,
+    aliases: Optional[dict[str, str]] = None,
+    subject_name: str = "",
+) -> str:
     handover_managers = (
         team_snapshot.get("handover_managers_details") if isinstance(team_snapshot.get("handover_managers_details"), list) else []
     )
@@ -1009,8 +1032,18 @@ def build_shift_end_message(end_time: str, team_snapshot: dict, aliases: Optiona
         team_snapshot.get("handover_team_details") if isinstance(team_snapshot.get("handover_team_details"), list) else []
     )
 
-    handover_managers_text = format_people_for_handover(handover_managers, include_non_management_start=False, aliases=aliases)
-    handover_team_text = format_people_for_handover(handover_team, include_non_management_start=True, aliases=aliases)
+    handover_managers_text = format_people_for_handover(
+        handover_managers,
+        include_non_management_start=False,
+        aliases=aliases,
+        subject_name=subject_name,
+    )
+    handover_team_text = format_people_for_handover(
+        handover_team,
+        include_non_management_start=True,
+        aliases=aliases,
+        subject_name=subject_name,
+    )
 
     if handover_managers_text:
         manager_verb = "are" if len(handover_managers) > 1 else "is"
@@ -1031,29 +1064,65 @@ def build_shift_end_message(end_time: str, team_snapshot: dict, aliases: Optiona
         team_snapshot.get("bridge_people_details") if isinstance(team_snapshot.get("bridge_people_details"), list) else []
     )
 
-    next_people_text = format_people_for_handover(next_shift_people, include_non_management_start=True, aliases=aliases)
-    next_team_text = format_people_for_handover(next_shift_team, include_non_management_start=True, aliases=aliases)
-    bridge_text = format_people_for_handover(bridge_people, include_non_management_start=True, aliases=aliases)
+    next_people_text = format_people_for_handover(
+        next_shift_people,
+        include_non_management_start=True,
+        aliases=aliases,
+        subject_name=subject_name,
+    )
+    next_team_text = format_people_for_handover(
+        next_shift_team,
+        include_non_management_start=True,
+        aliases=aliases,
+        subject_name=subject_name,
+    )
+    bridge_text = format_people_for_handover(
+        bridge_people,
+        include_non_management_start=True,
+        aliases=aliases,
+        subject_name=subject_name,
+    )
 
-    next_day_openers = team_snapshot.get("next_day_openers") if isinstance(team_snapshot.get("next_day_openers"), list) else []
+    next_day_openers = (
+        team_snapshot.get("next_day_openers_details") if isinstance(team_snapshot.get("next_day_openers_details"), list) else []
+    )
     next_day_opening_team = (
-        team_snapshot.get("next_day_opening_team") if isinstance(team_snapshot.get("next_day_opening_team"), list) else []
+        team_snapshot.get("next_day_opening_team_details")
+        if isinstance(team_snapshot.get("next_day_opening_team_details"), list)
+        else []
     )
 
     if not next_people_text:
         if next_day_openers:
-            manager_openers = [person for person in next_day_openers if is_management_person(person)]
+            manager_openers = [person for person in next_day_openers if is_management_person(person.get("employee"))]
             non_manager_openers = [person for person in next_day_openers if person not in manager_openers]
+            opener_reference_time = clean_cell(manager_openers[0].get("start_time")) if manager_openers else ""
 
             if manager_openers:
-                openers_text = join_human_names([alias_for_name(person, aliases or {}) for person in manager_openers])
+                openers_text = format_people_for_handover(
+                    manager_openers,
+                    include_non_management_start=False,
+                    aliases=aliases,
+                    subject_name=subject_name,
+                )
                 extra_openers = non_manager_openers
             else:
-                openers_text = join_human_names([alias_for_name(person, aliases or {}) for person in next_day_openers])
+                opener_reference_time = clean_cell(next_day_openers[0].get("start_time")) if next_day_openers else ""
+                openers_text = format_people_for_handover(
+                    next_day_openers,
+                    include_non_management_start=False,
+                    aliases=aliases,
+                    subject_name=subject_name,
+                )
                 extra_openers = []
 
-            combined_people = [alias_for_name(person, aliases or {}) for person in (extra_openers + next_day_opening_team)]
-            combined_team = join_human_names(combined_people)
+            combined_team = format_people_for_handover(
+                extra_openers + next_day_opening_team,
+                include_non_management_start=True,
+                aliases=aliases,
+                subject_name=subject_name,
+                reference_start_time=opener_reference_time,
+            )
 
             opener_verb = "are" if len(manager_openers) != 1 else "is"
             if combined_team:
@@ -1211,6 +1280,7 @@ def get_shift_team_snapshot(upload_id: Optional[int], today: str, subject_name: 
         next_day_shift_rows.append(
             {
                 "employee": employee,
+                "start_time": start_time,
                 "start_minutes": start_minutes,
                 "end_minutes": end_minutes,
             }
@@ -1219,6 +1289,14 @@ def get_shift_team_snapshot(upload_id: Optional[int], today: str, subject_name: 
     if next_day_shift_rows:
         earliest_next_day_start = min(item["start_minutes"] for item in next_day_shift_rows)
         next_day_openers = sorted(item["employee"] for item in next_day_shift_rows if item["start_minutes"] == earliest_next_day_start)
+        next_day_openers_details = sorted(
+            [
+                {"employee": item["employee"], "start_time": item["start_time"]}
+                for item in next_day_shift_rows
+                if item["start_minutes"] == earliest_next_day_start
+            ],
+            key=lambda person: clean_cell(person.get("employee")).lower(),
+        )
         opening_managers = [item for item in next_day_shift_rows if item["employee"] in next_day_openers and is_management_person(item["employee"])]
         opening_reference = opening_managers or [item for item in next_day_shift_rows if item["employee"] in next_day_openers]
         opening_window_start = min(item["start_minutes"] for item in opening_reference)
@@ -1232,9 +1310,19 @@ def get_shift_team_snapshot(upload_id: Optional[int], today: str, subject_name: 
                 and item["end_minutes"] > opening_window_start
             }
         )
+        next_day_opening_team_details = sorted(
+            [
+                {"employee": item["employee"], "start_time": item["start_time"]}
+                for item in next_day_shift_rows
+                if item["employee"] in next_day_opening_team
+            ],
+            key=lambda person: clean_cell(person.get("employee")).lower(),
+        )
     else:
         next_day_openers = []
+        next_day_openers_details = []
         next_day_opening_team = []
+        next_day_opening_team_details = []
 
     earliest_start = min(item["start_minutes"] for item in shift_rows)
     latest_end = max(item["end_minutes"] for item in shift_rows)
@@ -1380,7 +1468,9 @@ def get_shift_team_snapshot(upload_id: Optional[int], today: str, subject_name: 
         "bridge_people": bridge_people,
         "bridge_people_details": bridge_people_details,
         "next_day_openers": next_day_openers,
+        "next_day_openers_details": next_day_openers_details,
         "next_day_opening_team": next_day_opening_team,
+        "next_day_opening_team_details": next_day_opening_team_details,
         "handover_managers": handover_managers,
         "handover_managers_details": handover_managers_details,
         "handover_team": handover_team,
@@ -1525,7 +1615,12 @@ def build_notification_payload_from_settings() -> dict:
             "team_with_subject": team_snapshot["team_with_subject"],
         }
 
-        end_message = build_shift_end_message(end_time, team_snapshot, aliases=alias_preferences)
+        end_message = build_shift_end_message(
+            end_time,
+            team_snapshot,
+            aliases=alias_preferences,
+            subject_name=subject_name,
+        )
 
         notifications.append(
             {

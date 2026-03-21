@@ -119,14 +119,11 @@ def _extract_valid_shift_people(day_rows: list[sqlite3.Row]) -> list[str]:
 def _get_coworkers_for_person(db_path: Path, upload_id: int, shift_date: str, person: str) -> tuple[bool, list[str]]:
     day_rows = _get_day_shifts(db_path, upload_id, shift_date)
     person_clean = person.lower()
+    working_people = _extract_valid_shift_people(day_rows)
+    working_people_lower = {name.lower() for name in working_people}
 
-    person_working = any(clean_cell(row["employee"]).lower() == person_clean for row in day_rows)
-    coworkers: list[str] = []
-    for row in day_rows:
-        name = clean_cell(row["employee"])
-        if not name or name.lower() == person_clean or name in coworkers:
-            continue
-        coworkers.append(name)
+    person_working = person_clean in working_people_lower
+    coworkers = sorted(name for name in working_people if name.lower() != person_clean)
     return person_working, coworkers
 
 

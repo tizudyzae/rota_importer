@@ -134,6 +134,23 @@ def test_api_ask_missing_person_for_person_intent(tmp_path):
     assert response.json() == {"error": "person is required for this question type"}
 
 
+def test_api_ask_excludes_off_staff_for_coworker_question(tmp_path):
+    client, today, _ = _build_client(tmp_path)
+    headers = {"Authorization": "Bearer test-token"}
+
+    response = client.post(
+        "/api/ask",
+        json={"question": "who am I working with today?", "person": "Debbie"},
+        headers=headers,
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "answer": "Debbie is not scheduled to work today.",
+        "date": today,
+        "matched_intent": "who_am_i_working_with_today",
+    }
+
+
 def test_api_ask_unknown_question(tmp_path):
     client, today, _ = _build_client(tmp_path)
     response = client.post(

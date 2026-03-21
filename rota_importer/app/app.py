@@ -2594,6 +2594,37 @@ def api_notification_subjects():
     return JSONResponse({"subjects": [clean_cell(row["employee"]) for row in rows if clean_cell(row["employee"])]})
 
 
+async def parse_ask_request_body(request: Request) -> tuple[Optional[dict], Optional[JSONResponse]]:
+    try:
+        body = await request.json()
+    except Exception:
+        return None, JSONResponse(status_code=400, content={"error": "Invalid JSON payload"})
+
+    if not isinstance(body, dict):
+        return None, JSONResponse(status_code=400, content={"error": "JSON body must be an object"})
+
+    question = body.get("question")
+    person = body.get("person")
+
+    if not isinstance(question, str) or not clean_cell(question):
+        return None, JSONResponse(
+            status_code=400, content={"error": "question is required and must be a non-empty string"}
+        )
+
+    if person is not None and not isinstance(person, str):
+        return None, JSONResponse(status_code=400, content={"error": "person must be a string"})
+
+    return {"question": question, "person": person}, None
+
+
+def build_ask_json_response(question: str, person: Optional[str]) -> JSONResponse:
+    try:
+        response_payload = build_ask_response(question=question, person=person)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    return JSONResponse(response_payload)
+
+
 @app.post("/api/ask")
 async def api_ask(request: Request):
     authorization_header = request.headers.get("Authorization", "")
@@ -2605,30 +2636,33 @@ async def api_ask(request: Request):
     if not check_ask_rate_limit(client_ip):
         return JSONResponse(status_code=429, content={"error": "rate_limited"})
 
-    try:
-        body = await request.json()
-    except Exception:
-        return JSONResponse(status_code=400, content={"error": "Invalid JSON payload"})
+    parsed_body, error_response = await parse_ask_request_body(request)
+    if error_response:
+        return error_response
 
-    if not isinstance(body, dict):
-        return JSONResponse(status_code=400, content={"error": "JSON body must be an object"})
+    return build_ask_json_response(question=parsed_body["question"], person=parsed_body["person"])
 
-    question = body.get("question")
-    person = body.get("person")
 
-    if not isinstance(question, str) or not clean_cell(question):
-        return JSONResponse(
-            status_code=400, content={"error": "question is required and must be a non-empty string"}
-        )
+@app.post("/api/ha/ask")
+async def api_ha_bridge_ask(request: Request):
+    """Home Assistant proxy-friendly bridge endpoint for Siri/Shortcuts.
 
-    if person is not None and not isinstance(person, str):
-        return JSONResponse(status_code=400, content={"error": "person must be a string"})
+    This endpoint is intended to be called through:
+    /api/hassio/addons/<addon_slug>/proxy/api/ha/ask
 
-    try:
-        response_payload = build_ask_response(question=question, person=person)
-    except ValueError as exc:
-        return JSONResponse(status_code=400, content={"error": str(exc)})
-    return JSONResponse(response_payload)
+    Home Assistant/Nabu Casa protects the outer endpoint with Home Assistant auth.
+    The add-on still validates Authorization Bearer when it is supplied.
+    """
+    authorization_header = request.headers.get("Authorization", "")
+    bearer_token = extract_bearer_token(authorization_header)
+    if not bearer_token or not validate_ask_token(bearer_token):
+        return JSONResponse(status_code=401, content={"error": "unauthorized"})
+
+    parsed_body, error_response = await parse_ask_request_body(request)
+    if error_response:
+        return error_response
+
+    return build_ask_json_response(question=parsed_body["question"], person=parsed_body["person"])
 
 
 @app.get("/api/people/{person_name}/calendar.ics")

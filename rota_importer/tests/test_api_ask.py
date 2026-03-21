@@ -150,3 +150,60 @@ def test_api_ask_unauthorized_missing_or_invalid_token(tmp_path):
     )
     assert invalid.status_code == 401
     assert invalid.json() == {"error": "unauthorized"}
+
+
+def test_api_ha_bridge_successful_request(tmp_path):
+    client, _, tomorrow = _build_client(tmp_path)
+    headers = {"Authorization": "Bearer test-token"}
+
+    response = client.post("/api/ha/ask", json={"question": "who is opening tomorrow?"}, headers=headers)
+    assert response.status_code == 200
+    assert response.json() == {
+        "answer": "Tom is opening tomorrow.",
+        "date": tomorrow,
+        "matched_intent": "opening_shift",
+    }
+
+
+def test_api_ha_bridge_unauthorized_when_missing_token(tmp_path):
+    client, _, _ = _build_client(tmp_path)
+
+    response = client.post("/api/ha/ask", json={"question": "who is opening tomorrow?"})
+    assert response.status_code == 401
+    assert response.json() == {"error": "unauthorized"}
+
+
+def test_api_ha_bridge_invalid_payload(tmp_path):
+    client, _, _ = _build_client(tmp_path)
+    headers = {"Authorization": "Bearer test-token"}
+
+    response = client.post("/api/ha/ask", content="not-json", headers=headers)
+    assert response.status_code == 400
+    assert response.json() == {"error": "Invalid JSON payload"}
+
+
+def test_api_ha_bridge_unknown_question_fallback(tmp_path):
+    client, today, _ = _build_client(tmp_path)
+    headers = {"Authorization": "Bearer test-token"}
+
+    response = client.post("/api/ha/ask", json={"question": "can you sing me a song?"}, headers=headers)
+    assert response.status_code == 200
+    assert response.json() == {
+        "answer": "Sorry, I could not understand that rota question.",
+        "date": today,
+        "matched_intent": "unknown",
+    }
+
+
+def test_api_ha_bridge_matches_api_ask_response_shape(tmp_path):
+    client, _, _ = _build_client(tmp_path)
+    headers = {"Authorization": "Bearer test-token"}
+    payload = {"question": "who is opening tomorrow?", "person": "Nathan"}
+
+    api_ask_response = client.post("/api/ask", json=payload, headers=headers)
+    bridge_response = client.post("/api/ha/ask", json=payload, headers=headers)
+
+    assert api_ask_response.status_code == 200
+    assert bridge_response.status_code == 200
+    assert set(api_ask_response.json().keys()) == {"answer", "date", "matched_intent"}
+    assert set(bridge_response.json().keys()) == {"answer", "date", "matched_intent"}

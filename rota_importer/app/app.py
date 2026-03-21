@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import sqlite3
+import sys
 import threading
 import time
 from datetime import datetime, timedelta
@@ -20,6 +21,11 @@ from PIL import Image, ImageDraw
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
+
+BRIDGE_COMPONENT_DIR = Path(__file__).resolve().parents[1] / "ha_bridge_component" / "custom_components" / "rota_importer_bridge"
+if str(BRIDGE_COMPONENT_DIR) not in sys.path:
+    sys.path.append(str(BRIDGE_COMPONENT_DIR))
+import ask_shared
 
 APP_DIR = Path(__file__).resolve().parent
 STATIC_DIR = APP_DIR / "static"
@@ -1181,34 +1187,11 @@ def get_latest_upload_id() -> Optional[int]:
 
 
 def resolve_question_date(question: str, now_value: Optional[datetime] = None) -> tuple[str, str]:
-    now_local = now_value or datetime.now()
-    question_clean = clean_cell(question).lower()
-
-    if "tomorrow" in question_clean:
-        date_value = now_local.date() + timedelta(days=1)
-        return date_value.isoformat(), "tomorrow"
-
-    date_value = now_local.date()
-    return date_value.isoformat(), "today"
+    return ask_shared.resolve_question_date(question, now_value=now_value)
 
 
 def parse_ask_intent(question: str) -> str:
-    question_clean = clean_cell(question).lower()
-    question_normalized = re.sub(r"\s+", " ", question_clean)
-
-    if re.search(r"\bwho\b.*\bam i\b.*\bworking with\b", question_normalized):
-        return "who_am_i_working_with_today"
-
-    if "opening" in question_normalized or re.search(r"\bwho\b.*\bopens?\b", question_normalized):
-        return "opening_shift"
-
-    if "closing" in question_normalized or re.search(r"\bwho\b.*\bcloses?\b", question_normalized):
-        return "closing_shift"
-
-    if "who is working" in question_normalized or "who's working" in question_normalized:
-        return "who_is_working_today"
-
-    return "unknown"
+    return ask_shared.parse_ask_intent(question)
 
 
 def extract_bearer_token(authorization_header: str) -> Optional[str]:
@@ -1313,79 +1296,12 @@ def get_closing_people(upload_id: int, shift_date: str) -> list[str]:
 
 
 def build_ask_response(question: str, person: Optional[str] = None, now_value: Optional[datetime] = None) -> dict:
-    matched_intent = parse_ask_intent(question)
-    resolved_date, day_word = resolve_question_date(question, now_value=now_value)
-    default_unknown = {
-        "answer": "Sorry, I could not understand that rota question.",
-        "date": resolved_date,
-        "matched_intent": "unknown",
-    }
-
-    upload_id = get_latest_upload_id()
-    if not upload_id:
-        return {
-            "answer": f"I could not find rota data for {day_word}.",
-            "date": resolved_date,
-            "matched_intent": matched_intent,
-        }
-
-    if matched_intent == "who_is_working_today":
-        day_rows = get_day_shifts(upload_id, resolved_date)
-        people = []
-        for row in day_rows:
-            name = clean_cell(row["employee"])
-            if name and name not in people:
-                people.append(name)
-        if not people:
-            answer = f"No one is scheduled to work {day_word}."
-        elif len(people) == 1:
-            answer = f"{people[0]} is working {day_word}."
-        else:
-            answer = f"{join_human_names(people)} are working {day_word}."
-        return {"answer": answer, "date": resolved_date, "matched_intent": matched_intent}
-
-    if matched_intent == "who_am_i_working_with_today":
-        person_key = sanitize_person_key(person or "")
-        if not person_key:
-            raise ValueError("person is required for this question type")
-
-        snapshot = get_subject_shift_and_coworkers(person_key, resolved_date)
-        if snapshot["status"] == "WORKING":
-            coworkers: list[str] = []
-            for item in snapshot["coworkers_list"]:
-                label = clean_cell(item)
-                name_only = re.split(r"\s+\(|\s+until\s+", label, maxsplit=1)[0]
-                if name_only and name_only not in coworkers:
-                    coworkers.append(name_only)
-            if coworkers:
-                answer = f"You are working with {join_human_names(coworkers)} {day_word}."
-            else:
-                answer = f"You are not working with anyone else {day_word}."
-        else:
-            answer = f"{person_key} is not scheduled to work {day_word}."
-        return {"answer": answer, "date": resolved_date, "matched_intent": matched_intent}
-
-    if matched_intent == "opening_shift":
-        opening_people = get_opening_people(upload_id, resolved_date)
-        if not opening_people:
-            answer = f"I could not find an opening shift for {day_word}."
-        elif len(opening_people) == 1:
-            answer = f"{opening_people[0]} is opening {day_word}."
-        else:
-            answer = f"{join_human_names(opening_people)} are opening {day_word}."
-        return {"answer": answer, "date": resolved_date, "matched_intent": matched_intent}
-
-    if matched_intent == "closing_shift":
-        closing_people = get_closing_people(upload_id, resolved_date)
-        if not closing_people:
-            answer = f"I could not find a closing shift for {day_word}."
-        elif len(closing_people) == 1:
-            answer = f"{closing_people[0]} is closing {day_word}."
-        else:
-            answer = f"{join_human_names(closing_people)} are closing {day_word}."
-        return {"answer": answer, "date": resolved_date, "matched_intent": matched_intent}
-
-    return default_unknown
+    return ask_shared.build_ask_response(
+        db_path=DB_PATH,
+        question=question,
+        person=person,
+        now_value=now_value,
+    )
 
 
 def personalize_name(name: str, subject_name: str, replacement: str = "you") -> str:

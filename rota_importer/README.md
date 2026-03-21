@@ -88,39 +88,48 @@ You can also use:
 
 Use a second REST sensor or a `rest_command` and template the returned JSON into any `notify.*` service.
 
-## Siri Shortcuts / iOS automation endpoint (Home Assistant / Nabu Casa bridge)
+## Siri Shortcuts / iOS automation endpoint (Home Assistant-native bridge)
 
-The add-on now includes a Home Assistant-friendly bridge route:
+The Siri/Shortcuts endpoint is now a **Home Assistant-native API route** rather than a Supervisor add-on proxy path.
 
-- Internal add-on route: `POST /api/ha/ask`
-- Home Assistant remote proxy route (use this from iOS Shortcuts):
-  - `POST /api/hassio/addons/<addon_slug>/proxy/api/ha/ask`
+### Final URL for iOS Shortcuts
 
-This gives you a Home Assistant-managed URL that works through your Home Assistant base URL (including Nabu Casa), without exposing a raw add-on port.
+Use this URL in **Get Contents of URL**:
 
-### Why this bridge exists
+- `POST https://YOUR_HOME_ASSISTANT_URL/api/rota_importer/ask`
 
-- **Ingress remains for UI** (interactive browser UI).
-- **Bridge is for API calls** (Siri/Shortcuts/automation HTTP).
-- **No extra external add-on port exposure is required.**
-- The bridge reuses the same rota Q&A logic as `/api/ask`.
+Examples:
 
-### Authentication and security
+- Nabu Casa remote URL: `https://<your-id>.ui.nabu.casa/api/rota_importer/ask`
+- Local URL: `https://homeassistant.local:8123/api/rota_importer/ask`
 
-- Your Shortcut should send a Home Assistant long-lived access token as:
+### Why this fixes 401 with the Supervisor proxy URL
+
+- `/api/hassio/addons/<slug>/proxy/...` is a Supervisor/add-on proxy path with different auth behavior.
+- `/api/rota_importer/ask` is served by Home Assistant's own HTTP API layer and uses standard Home Assistant bearer-token auth.
+- No raw add-on port exposure is required.
+- Ingress UI continues to work unchanged.
+
+### Bridge deployment details
+
+This add-on now ships and syncs a small Home Assistant custom component (`rota_importer_bridge`) to:
+
+- `/homeassistant/custom_components/rota_importer_bridge`
+
+On add-on startup, the add-on also ensures this exists in `/homeassistant/configuration.yaml`:
+
+```yaml
+rota_importer_bridge:
+```
+
+After first install/update, restart Home Assistant once so the endpoint is loaded.
+
+### Authentication
+
+Send your Home Assistant long-lived access token:
 
 ```http
 Authorization: Bearer <HOME_ASSISTANT_LONG_LIVED_TOKEN>
-```
-
-- The Home Assistant proxy path is protected by Home Assistant auth.
-- The add-on bridge still validates the bearer token before processing.
-- Requests without a valid bearer token are rejected with:
-
-```json
-{
-  "error": "unauthorized"
-}
 ```
 
 ### Request payload
@@ -129,82 +138,38 @@ Authorization: Bearer <HOME_ASSISTANT_LONG_LIVED_TOKEN>
 
 ```json
 {
-  "question": "who is opening tomorrow?",
+  "question": "who am i working with today?",
   "person": "Nathan"
 }
 ```
 
 - `question` is required.
-- `person` is optional unless the intent needs it (for example, "who am I working with").
+- `person` is optional unless the question intent needs it.
 
 ### Response JSON shape
 
 ```json
 {
-  "answer": "Tom is opening tomorrow.",
-  "date": "2026-03-22",
-  "matched_intent": "opening_shift"
+  "answer": "...",
+  "date": "YYYY-MM-DD",
+  "matched_intent": "..."
 }
 ```
 
-### Find your `<addon_slug>`
-
-In Home Assistant, open **Settings → Add-ons → Rota PDF Importer**, then use the add-on ID slug shown by Home Assistant. For local repositories this is commonly `local_rota_importer`.
-
-### cURL examples (Home Assistant / Nabu Casa URL)
-
-Who is opening tomorrow:
+### cURL examples
 
 ```bash
-curl -s -X POST "https://YOUR_HOME_ASSISTANT_URL/api/hassio/addons/local_rota_importer/proxy/api/ha/ask"   -H "Authorization: Bearer <HOME_ASSISTANT_LONG_LIVED_TOKEN>"   -H "Content-Type: application/json"   -d '{"question":"who is opening tomorrow?"}'
+curl -s -X POST "https://YOUR_HOME_ASSISTANT_URL/api/rota_importer/ask" \
+  -H "Authorization: Bearer <HOME_ASSISTANT_LONG_LIVED_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"question":"who is opening tomorrow?"}'
 ```
-
-Who am I working with:
 
 ```bash
-curl -s -X POST "https://YOUR_HOME_ASSISTANT_URL/api/hassio/addons/local_rota_importer/proxy/api/ha/ask"   -H "Authorization: Bearer <HOME_ASSISTANT_LONG_LIVED_TOKEN>"   -H "Content-Type: application/json"   -d '{"question":"who am I working with today?","person":"Nathan"}'
-```
-
-Unknown question fallback:
-
-```bash
-curl -s -X POST "https://YOUR_HOME_ASSISTANT_URL/api/hassio/addons/local_rota_importer/proxy/api/ha/ask"   -H "Authorization: Bearer <HOME_ASSISTANT_LONG_LIVED_TOKEN>"   -H "Content-Type: application/json"   -d '{"question":"can you sing me a song?"}'
-```
-
-### Example iOS Shortcut payloads
-
-For **Get Contents of URL**:
-
-- URL: `https://YOUR_HOME_ASSISTANT_URL/api/hassio/addons/local_rota_importer/proxy/api/ha/ask`
-- Method: `POST`
-- Headers:
-  - `Authorization: Bearer <HOME_ASSISTANT_LONG_LIVED_TOKEN>`
-  - `Content-Type: application/json`
-- Request Body: JSON
-
-Payload example 1:
-
-```json
-{
-  "question": "who is opening tomorrow?"
-}
-```
-
-Payload example 2:
-
-```json
-{
-  "question": "who am I working with today?",
-  "person": "Nathan"
-}
-```
-
-If `person` is missing for a person-specific question:
-
-```json
-{
-  "error": "person is required for this question type"
-}
+curl -s -X POST "https://YOUR_HOME_ASSISTANT_URL/api/rota_importer/ask" \
+  -H "Authorization: Bearer <HOME_ASSISTANT_LONG_LIVED_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"question":"who am I working with today?","person":"Nathan"}'
 ```
 
 ## Extract specific rota data with the API

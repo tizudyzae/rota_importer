@@ -1158,6 +1158,164 @@ def join_human_names(names: List[str]) -> str:
     return f"{', '.join(cleaned[:-1])}, and {cleaned[-1]}"
 
 
+def get_latest_upload_id() -> Optional[int]:
+    with get_conn() as conn:
+        row = conn.execute(
+            """
+            SELECT id
+            FROM uploads
+            ORDER BY uploaded_at DESC, id DESC
+            LIMIT 1
+            """
+        ).fetchone()
+    return row["id"] if row else None
+
+
+def resolve_question_date(question: str, now_value: Optional[datetime] = None) -> tuple[str, str]:
+    now_local = now_value or datetime.now()
+    question_clean = clean_cell(question).lower()
+
+    if "tomorrow" in question_clean:
+        date_value = now_local.date() + timedelta(days=1)
+        return date_value.isoformat(), "tomorrow"
+
+    date_value = now_local.date()
+    return date_value.isoformat(), "today"
+
+
+def parse_ask_intent(question: str) -> str:
+    question_clean = clean_cell(question).lower()
+    question_normalized = re.sub(r"\s+", " ", question_clean)
+
+    if re.search(r"\bwho\b.*\bam i\b.*\bworking with\b", question_normalized):
+        return "who_am_i_working_with_today"
+
+    if "opening" in question_normalized or re.search(r"\bwho\b.*\bopens?\b", question_normalized):
+        return "opening_shift"
+
+    if "closing" in question_normalized or re.search(r"\bwho\b.*\bcloses?\b", question_normalized):
+        return "closing_shift"
+
+    if "who is working" in question_normalized or "who's working" in question_normalized:
+        return "who_is_working_today"
+
+    return "unknown"
+
+
+def get_opening_people(upload_id: int, shift_date: str) -> list[str]:
+    day_rows = get_day_shifts(upload_id, shift_date)
+    opening_minutes: Optional[int] = None
+    opening_people: list[str] = []
+
+    for row in day_rows:
+        start_minutes = hhmm_to_minutes(clean_cell(row["start_time"]))
+        employee = clean_cell(row["employee"])
+        if start_minutes is None or not employee:
+            continue
+        if opening_minutes is None or start_minutes < opening_minutes:
+            opening_minutes = start_minutes
+            opening_people = [employee]
+        elif start_minutes == opening_minutes and employee not in opening_people:
+            opening_people.append(employee)
+
+    return opening_people
+
+
+def get_closing_people(upload_id: int, shift_date: str) -> list[str]:
+    day_rows = get_day_shifts(upload_id, shift_date)
+    closing_minutes: Optional[int] = None
+    closing_people: list[str] = []
+
+    for row in day_rows:
+        end_minutes = hhmm_to_minutes(clean_cell(row["end_time"]))
+        employee = clean_cell(row["employee"])
+        if end_minutes is None or not employee:
+            continue
+        if closing_minutes is None or end_minutes > closing_minutes:
+            closing_minutes = end_minutes
+            closing_people = [employee]
+        elif end_minutes == closing_minutes and employee not in closing_people:
+            closing_people.append(employee)
+
+    return closing_people
+
+
+def build_ask_response(question: str, person: Optional[str] = None, now_value: Optional[datetime] = None) -> dict:
+    matched_intent = parse_ask_intent(question)
+    resolved_date, day_word = resolve_question_date(question, now_value=now_value)
+    default_unknown = {
+        "answer": "Sorry, I could not understand that rota question.",
+        "date": resolved_date,
+        "matched_intent": "unknown",
+    }
+
+    upload_id = get_latest_upload_id()
+    if not upload_id:
+        return {
+            "answer": f"I could not find rota data for {day_word}.",
+            "date": resolved_date,
+            "matched_intent": matched_intent,
+        }
+
+    if matched_intent == "who_is_working_today":
+        day_rows = get_day_shifts(upload_id, resolved_date)
+        people = []
+        for row in day_rows:
+            name = clean_cell(row["employee"])
+            if name and name not in people:
+                people.append(name)
+        if not people:
+            answer = f"No one is scheduled to work {day_word}."
+        elif len(people) == 1:
+            answer = f"{people[0]} is working {day_word}."
+        else:
+            answer = f"{join_human_names(people)} are working {day_word}."
+        return {"answer": answer, "date": resolved_date, "matched_intent": matched_intent}
+
+    if matched_intent == "who_am_i_working_with_today":
+        person_key = sanitize_person_key(person or "")
+        if not person_key:
+            raise ValueError("person is required for this question type")
+
+        snapshot = get_subject_shift_and_coworkers(person_key, resolved_date)
+        if snapshot["status"] == "WORKING":
+            coworkers: list[str] = []
+            for item in snapshot["coworkers_list"]:
+                label = clean_cell(item)
+                name_only = re.split(r"\s+\(|\s+until\s+", label, maxsplit=1)[0]
+                if name_only and name_only not in coworkers:
+                    coworkers.append(name_only)
+            if coworkers:
+                answer = f"You are working with {join_human_names(coworkers)} {day_word}."
+            else:
+                answer = f"You are not working with anyone else {day_word}."
+        else:
+            answer = f"{person_key} is not scheduled to work {day_word}."
+        return {"answer": answer, "date": resolved_date, "matched_intent": matched_intent}
+
+    if matched_intent == "opening_shift":
+        opening_people = get_opening_people(upload_id, resolved_date)
+        if not opening_people:
+            answer = f"I could not find an opening shift for {day_word}."
+        elif len(opening_people) == 1:
+            answer = f"{opening_people[0]} is opening {day_word}."
+        else:
+            answer = f"{join_human_names(opening_people)} are opening {day_word}."
+        return {"answer": answer, "date": resolved_date, "matched_intent": matched_intent}
+
+    if matched_intent == "closing_shift":
+        closing_people = get_closing_people(upload_id, resolved_date)
+        if not closing_people:
+            answer = f"I could not find a closing shift for {day_word}."
+        elif len(closing_people) == 1:
+            answer = f"{closing_people[0]} is closing {day_word}."
+        else:
+            answer = f"{join_human_names(closing_people)} are closing {day_word}."
+        return {"answer": answer, "date": resolved_date, "matched_intent": matched_intent}
+
+    return default_unknown
+
+
 def personalize_name(name: str, subject_name: str, replacement: str = "you") -> str:
     clean_name = clean_cell(name)
     clean_subject = clean_cell(subject_name)
@@ -2362,6 +2520,34 @@ def api_notification_subjects():
             """
         ).fetchall()
     return JSONResponse({"subjects": [clean_cell(row["employee"]) for row in rows if clean_cell(row["employee"])]})
+
+
+@app.post("/api/ask")
+async def api_ask(request: Request):
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "Invalid JSON payload"})
+
+    if not isinstance(body, dict):
+        return JSONResponse(status_code=400, content={"error": "JSON body must be an object"})
+
+    question = body.get("question")
+    person = body.get("person")
+
+    if not isinstance(question, str) or not clean_cell(question):
+        return JSONResponse(
+            status_code=400, content={"error": "question is required and must be a non-empty string"}
+        )
+
+    if person is not None and not isinstance(person, str):
+        return JSONResponse(status_code=400, content={"error": "person must be a string"})
+
+    try:
+        response_payload = build_ask_response(question=question, person=person)
+    except ValueError as exc:
+        return JSONResponse(status_code=400, content={"error": str(exc)})
+    return JSONResponse(response_payload)
 
 
 @app.get("/api/people/{person_name}/calendar.ics")

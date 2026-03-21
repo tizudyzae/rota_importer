@@ -1,4 +1,5 @@
 import csv
+import hmac
 import io
 import json
 import os
@@ -6,6 +7,7 @@ import re
 import shutil
 import sqlite3
 import threading
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -42,6 +44,13 @@ AUTO_NOTIFY_GRACE_MINUTES = 5
 
 _auto_notify_stop = threading.Event()
 _auto_notify_thread: Optional[threading.Thread] = None
+ASK_AUTH_CACHE_TTL_SECONDS = 300
+ASK_RATE_LIMIT_WINDOW_SECONDS = 60
+ASK_RATE_LIMIT_MAX_REQUESTS = 30
+
+_ask_auth_cache: dict[str, tuple[float, bool]] = {}
+_ask_rate_limit_state: dict[str, list[float]] = {}
+_ask_rate_limit_lock = threading.Lock()
 
 
 def get_conn() -> sqlite3.Connection:
@@ -1200,6 +1209,69 @@ def parse_ask_intent(question: str) -> str:
         return "who_is_working_today"
 
     return "unknown"
+
+
+def extract_bearer_token(authorization_header: str) -> Optional[str]:
+    header = clean_cell(authorization_header)
+    if not header:
+        return None
+    match = re.fullmatch(r"Bearer\s+(.+)", header, flags=re.IGNORECASE)
+    if not match:
+        return None
+    token = match.group(1).strip()
+    return token or None
+
+
+def validate_ask_token(token: str) -> bool:
+    token_clean = clean_cell(token)
+    if not token_clean:
+        return False
+
+    now_ts = time.time()
+    cached = _ask_auth_cache.get(token_clean)
+    if cached and cached[0] > now_ts:
+        return cached[1]
+
+    configured_token = clean_cell(os.environ.get("ASK_API_TOKEN", ""))
+    if configured_token:
+        is_valid = hmac.compare_digest(token_clean, configured_token)
+        _ask_auth_cache[token_clean] = (now_ts + ASK_AUTH_CACHE_TTL_SECONDS, is_valid)
+        return is_valid
+
+    validate_url = clean_cell(os.environ.get("ASK_AUTH_VALIDATE_URL", f"{HA_CORE_API_BASE}/auth/current_user"))
+    if not validate_url:
+        _ask_auth_cache[token_clean] = (now_ts + ASK_AUTH_CACHE_TTL_SECONDS, False)
+        return False
+
+    req = urlrequest.Request(
+        validate_url,
+        headers={
+            "Authorization": f"Bearer {token_clean}",
+            "Accept": "application/json",
+        },
+        method="GET",
+    )
+    try:
+        with urlrequest.urlopen(req, timeout=5) as response:
+            is_valid = 200 <= response.status < 300
+    except Exception:
+        is_valid = False
+
+    _ask_auth_cache[token_clean] = (now_ts + ASK_AUTH_CACHE_TTL_SECONDS, is_valid)
+    return is_valid
+
+
+def check_ask_rate_limit(client_key: str) -> bool:
+    now_ts = time.time()
+    with _ask_rate_limit_lock:
+        timestamps = _ask_rate_limit_state.get(client_key, [])
+        recent = [ts for ts in timestamps if now_ts - ts < ASK_RATE_LIMIT_WINDOW_SECONDS]
+        if len(recent) >= ASK_RATE_LIMIT_MAX_REQUESTS:
+            _ask_rate_limit_state[client_key] = recent
+            return False
+        recent.append(now_ts)
+        _ask_rate_limit_state[client_key] = recent
+    return True
 
 
 def get_opening_people(upload_id: int, shift_date: str) -> list[str]:
@@ -2524,6 +2596,15 @@ def api_notification_subjects():
 
 @app.post("/api/ask")
 async def api_ask(request: Request):
+    authorization_header = request.headers.get("Authorization", "")
+    bearer_token = extract_bearer_token(authorization_header)
+    if not bearer_token or not validate_ask_token(bearer_token):
+        return JSONResponse(status_code=401, content={"error": "unauthorized"})
+
+    client_ip = request.client.host if request.client and request.client.host else "unknown"
+    if not check_ask_rate_limit(client_ip):
+        return JSONResponse(status_code=429, content={"error": "rate_limited"})
+
     try:
         body = await request.json()
     except Exception:

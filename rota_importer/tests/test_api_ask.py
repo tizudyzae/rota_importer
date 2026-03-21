@@ -1,4 +1,5 @@
 from datetime import datetime
+import os
 from pathlib import Path
 import sys
 
@@ -43,6 +44,9 @@ def _build_client(tmp_path):
     app_module.EXPORT_DIR = tmp_path / "exports"
     app_module.start_auto_notification_worker = lambda: None
     app_module.stop_auto_notification_worker = lambda: None
+    app_module._ask_auth_cache.clear()
+    app_module._ask_rate_limit_state.clear()
+    os.environ["ASK_API_TOKEN"] = "test-token"
     app_module.init_db()
 
     today = datetime.now().date().isoformat()
@@ -72,8 +76,9 @@ def test_date_parsing():
 
 def test_api_ask_successful_responses(tmp_path):
     client, today, tomorrow = _build_client(tmp_path)
+    headers = {"Authorization": "Bearer test-token"}
 
-    opening = client.post("/api/ask", json={"question": "who is opening tomorrow?"})
+    opening = client.post("/api/ask", json={"question": "who is opening tomorrow?"}, headers=headers)
     assert opening.status_code == 200
     assert opening.json() == {
         "answer": "Tom is opening tomorrow.",
@@ -84,6 +89,7 @@ def test_api_ask_successful_responses(tmp_path):
     working_with = client.post(
         "/api/ask",
         json={"question": "who am I working with today?", "person": "Nathan"},
+        headers=headers,
     )
     assert working_with.status_code == 200
     assert working_with.json() == {
@@ -95,24 +101,52 @@ def test_api_ask_successful_responses(tmp_path):
 
 def test_api_ask_missing_question(tmp_path):
     client, _, _ = _build_client(tmp_path)
-    response = client.post("/api/ask", json={"person": "Nathan"})
+    response = client.post(
+        "/api/ask",
+        json={"person": "Nathan"},
+        headers={"Authorization": "Bearer test-token"},
+    )
     assert response.status_code == 400
     assert response.json() == {"error": "question is required and must be a non-empty string"}
 
 
 def test_api_ask_missing_person_for_person_intent(tmp_path):
     client, _, _ = _build_client(tmp_path)
-    response = client.post("/api/ask", json={"question": "who am I working with?"})
+    response = client.post(
+        "/api/ask",
+        json={"question": "who am I working with?"},
+        headers={"Authorization": "Bearer test-token"},
+    )
     assert response.status_code == 400
     assert response.json() == {"error": "person is required for this question type"}
 
 
 def test_api_ask_unknown_question(tmp_path):
     client, today, _ = _build_client(tmp_path)
-    response = client.post("/api/ask", json={"question": "can you sing me a song?"})
+    response = client.post(
+        "/api/ask",
+        json={"question": "can you sing me a song?"},
+        headers={"Authorization": "Bearer test-token"},
+    )
     assert response.status_code == 200
     assert response.json() == {
         "answer": "Sorry, I could not understand that rota question.",
         "date": today,
         "matched_intent": "unknown",
     }
+
+
+def test_api_ask_unauthorized_missing_or_invalid_token(tmp_path):
+    client, _, _ = _build_client(tmp_path)
+
+    missing = client.post("/api/ask", json={"question": "who is working today?"})
+    assert missing.status_code == 401
+    assert missing.json() == {"error": "unauthorized"}
+
+    invalid = client.post(
+        "/api/ask",
+        json={"question": "who is working today?"},
+        headers={"Authorization": "Bearer wrong-token"},
+    )
+    assert invalid.status_code == 401
+    assert invalid.json() == {"error": "unauthorized"}

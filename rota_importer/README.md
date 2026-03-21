@@ -94,9 +94,26 @@ The add-on now exposes a lightweight rule-based question endpoint:
 
 - `POST /api/ask`
 - `Content-Type: application/json`
+- `Authorization: Bearer <token>` (required)
 - Body:
   - `question` (required string)
   - `person` (optional string; required for "who am I working with" style questions)
+
+Authentication and security notes:
+
+- Requests without a Bearer token are rejected.
+- Invalid tokens are rejected with:
+
+```json
+{
+  "error": "unauthorized"
+}
+```
+
+- Token validation behavior:
+  - If `ASK_API_TOKEN` is set in the add-on environment, `/api/ask` requires that exact token.
+  - Otherwise the add-on validates the Bearer token against Home Assistant using `/auth/current_user` (or `ASK_AUTH_VALIDATE_URL` if set).
+- Basic in-memory per-IP rate limiting is enabled for `/api/ask` (default: 30 requests per 60 seconds).
 
 ### Supported question types
 
@@ -138,6 +155,7 @@ Who is opening tomorrow:
 
 ```bash
 curl -s -X POST "http://YOUR_ADDON_HOST:8099/api/ask" \
+  -H "Authorization: Bearer <LONG_LIVED_ACCESS_TOKEN>" \
   -H "Content-Type: application/json" \
   -d '{"question":"who is opening tomorrow?"}'
 ```
@@ -146,6 +164,7 @@ Who am I working with:
 
 ```bash
 curl -s -X POST "http://YOUR_ADDON_HOST:8099/api/ask" \
+  -H "Authorization: Bearer <LONG_LIVED_ACCESS_TOKEN>" \
   -H "Content-Type: application/json" \
   -d '{"question":"who am I working with today?","person":"Nathan"}'
 ```
@@ -154,6 +173,7 @@ Unknown question fallback:
 
 ```bash
 curl -s -X POST "http://YOUR_ADDON_HOST:8099/api/ask" \
+  -H "Authorization: Bearer <LONG_LIVED_ACCESS_TOKEN>" \
   -H "Content-Type: application/json" \
   -d '{"question":"can you sing me a song?"}'
 ```

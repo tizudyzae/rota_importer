@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 import asyncio
+import json
 import logging
 import os
 
@@ -14,7 +15,8 @@ from yarl import URL
 
 from .bridge_logic import validate_bridge_payload
 
-DEFAULT_ADDON_ASK_URL = "http://rota_importer:8099/api/ask"
+DEFAULT_ADDON_ASK_URL = "http://addon_rota_importer:8099/api/ask"
+DISALLOWED_LOCAL_HOSTS = {"localhost", "127.0.0.1", "::1"}
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -24,6 +26,20 @@ class RotaImporterAskView(HomeAssistantView):
     url = "/api/rota_importer/ask"
     name = "api:rota_importer:ask"
     requires_auth = True
+
+    @staticmethod
+    def _resolve_addon_ask_url() -> URL:
+        configured_url = URL(os.environ.get("ROTA_IMPORTER_ADDON_ASK_URL", DEFAULT_ADDON_ASK_URL))
+        host = configured_url.host or ""
+        if host in DISALLOWED_LOCAL_HOSTS:
+            fallback_url = URL(DEFAULT_ADDON_ASK_URL)
+            _LOGGER.warning(
+                "[bridge] refusing local host target '%s'; using add-on host '%s' instead",
+                host,
+                fallback_url.host,
+            )
+            return fallback_url
+        return configured_url
 
     @classmethod
     async def post(cls, request):
@@ -44,15 +60,22 @@ class RotaImporterAskView(HomeAssistantView):
         if not auth_header:
             return cls.json({"error": "unauthorized"}, status_code=401)
 
-        addon_ask_url = URL(os.environ.get("ROTA_IMPORTER_ADDON_ASK_URL", DEFAULT_ADDON_ASK_URL))
-        _LOGGER.info("Rota bridge resolved internal add-on ask URL: %s", addon_ask_url)
+        addon_ask_url = cls._resolve_addon_ask_url()
+        _LOGGER.info(
+            "[bridge] resolved target host=%s port=%s path=%s",
+            addon_ask_url.host,
+            addon_ask_url.port,
+            addon_ask_url.path,
+        )
         payload: dict[str, Any] = {"question": question}
         if person is not None:
             payload["person"] = person
 
         session = async_get_clientsession(request.app["hass"])
-        _LOGGER.info("Rota bridge request start: forwarding POST %s", addon_ask_url)
+        request_attempted = False
+        _LOGGER.info("[bridge] forwarding POST to %s", addon_ask_url)
         try:
+            request_attempted = True
             async with session.post(
                 addon_ask_url,
                 json=payload,
@@ -62,20 +85,31 @@ class RotaImporterAskView(HomeAssistantView):
                 },
                 timeout=10,
             ) as response:
+                response_text = await response.text()
                 try:
-                    forwarded_payload = await response.json()
+                    forwarded_payload = json.loads(response_text)
                 except ValueError:
                     forwarded_payload = {"error": "Bridge upstream returned non-JSON response"}
                 if response.status != 200:
                     _LOGGER.warning(
-                        "Rota bridge upstream non-200 response: status=%s url=%s",
+                        "[bridge] upstream non-200: status=%s body=%s",
                         response.status,
-                        addon_ask_url,
+                        response_text,
                     )
                 return cls.json(forwarded_payload, status_code=response.status)
-        except asyncio.TimeoutError:
-            _LOGGER.error("Rota bridge timeout calling add-on ask endpoint: %s", addon_ask_url)
+        except asyncio.TimeoutError as err:
+            _LOGGER.error(
+                "[bridge] request failed: %s: %s (attempted=%s)",
+                type(err).__name__,
+                "timeout while calling add-on ask endpoint",
+                request_attempted,
+            )
             return cls.json({"error": "Bridge timed out reaching add-on ask endpoint"}, status_code=504)
-        except ClientError as err:
-            _LOGGER.error("Rota bridge connection error calling %s: %s", addon_ask_url, err)
+        except (ClientError, OSError) as err:
+            _LOGGER.error(
+                "[bridge] request failed: %s: %s (attempted=%s)",
+                type(err).__name__,
+                err,
+                request_attempted,
+            )
             return cls.json({"error": "Bridge could not reach add-on ask endpoint"}, status_code=502)

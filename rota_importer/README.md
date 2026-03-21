@@ -88,21 +88,34 @@ You can also use:
 
 Use a second REST sensor or a `rest_command` and template the returned JSON into any `notify.*` service.
 
-## Siri Shortcuts / iOS automation endpoint
+## Siri Shortcuts / iOS automation endpoint (Home Assistant / Nabu Casa bridge)
 
-The add-on now exposes a lightweight rule-based question endpoint:
+The add-on now includes a Home Assistant-friendly bridge route:
 
-- `POST /api/ask`
-- `Content-Type: application/json`
-- `Authorization: Bearer <token>` (required)
-- Body:
-  - `question` (required string)
-  - `person` (optional string; required for "who am I working with" style questions)
+- Internal add-on route: `POST /api/ha/ask`
+- Home Assistant remote proxy route (use this from iOS Shortcuts):
+  - `POST /api/hassio/addons/<addon_slug>/proxy/api/ha/ask`
 
-Authentication and security notes:
+This gives you a Home Assistant-managed URL that works through your Home Assistant base URL (including Nabu Casa), without exposing a raw add-on port.
 
-- Requests without a Bearer token are rejected.
-- Invalid tokens are rejected with:
+### Why this bridge exists
+
+- **Ingress remains for UI** (interactive browser UI).
+- **Bridge is for API calls** (Siri/Shortcuts/automation HTTP).
+- **No extra external add-on port exposure is required.**
+- The bridge reuses the same rota Q&A logic as `/api/ask`.
+
+### Authentication and security
+
+- Your Shortcut should send a Home Assistant long-lived access token as:
+
+```http
+Authorization: Bearer <HOME_ASSISTANT_LONG_LIVED_TOKEN>
+```
+
+- The Home Assistant proxy path is protected by Home Assistant auth.
+- The add-on bridge still validates the bearer token before processing.
+- Requests without a valid bearer token are rejected with:
 
 ```json
 {
@@ -110,77 +123,66 @@ Authentication and security notes:
 }
 ```
 
-- Token validation behavior:
-  - If `ASK_API_TOKEN` is set in the add-on environment, `/api/ask` requires that exact token.
-  - Otherwise the add-on validates the Bearer token against Home Assistant using `/auth/current_user` (or `ASK_AUTH_VALIDATE_URL` if set).
-- Basic in-memory per-IP rate limiting is enabled for `/api/ask` (default: 30 requests per 60 seconds).
+### Request payload
 
-### Supported question types
+`Content-Type: application/json`
 
-`/api/ask` currently matches these intents:
+```json
+{
+  "question": "who is opening tomorrow?",
+  "person": "Nathan"
+}
+```
 
-- `who_is_working_today`
-- `who_am_i_working_with_today`
-- `opening_shift`
-- `closing_shift`
+- `question` is required.
+- `person` is optional unless the intent needs it (for example, "who am I working with").
 
-Example phrases:
+### Response JSON shape
 
-- `who is working today?`
-- `who am I working with?`
-- `who is opening tomorrow?`
-- `who opens tomorrow?`
-- `who is closing today?`
-- `who closes today?`
+```json
+{
+  "answer": "Tom is opening tomorrow.",
+  "date": "2026-03-22",
+  "matched_intent": "opening_shift"
+}
+```
 
-Date resolution rules:
+### Find your `<addon_slug>`
 
-- `today` → current local date
-- `tomorrow` → current local date + 1 day
-- no date phrase → defaults to `today`
+In Home Assistant, open **Settings → Add-ons → Rota PDF Importer**, then use the add-on ID slug shown by Home Assistant. For local repositories this is commonly `local_rota_importer`.
 
-### Opening/closing mapping
-
-This add-on does not depend on named shift labels like "open" or "close" in the PDF.
-Instead it derives them from parsed shift times:
-
-- **Opening shift** = earliest `start_time` on the resolved day
-- **Closing shift** = latest `end_time` on the resolved day
-
-If your rota uses different wording, this time-based mapping is what `/api/ask` uses.
-
-### cURL examples
+### cURL examples (Home Assistant / Nabu Casa URL)
 
 Who is opening tomorrow:
 
 ```bash
-curl -s -X POST "http://YOUR_ADDON_HOST:8099/api/ask" \
-  -H "Authorization: Bearer <LONG_LIVED_ACCESS_TOKEN>" \
-  -H "Content-Type: application/json" \
-  -d '{"question":"who is opening tomorrow?"}'
+curl -s -X POST "https://YOUR_HOME_ASSISTANT_URL/api/hassio/addons/local_rota_importer/proxy/api/ha/ask"   -H "Authorization: Bearer <HOME_ASSISTANT_LONG_LIVED_TOKEN>"   -H "Content-Type: application/json"   -d '{"question":"who is opening tomorrow?"}'
 ```
 
 Who am I working with:
 
 ```bash
-curl -s -X POST "http://YOUR_ADDON_HOST:8099/api/ask" \
-  -H "Authorization: Bearer <LONG_LIVED_ACCESS_TOKEN>" \
-  -H "Content-Type: application/json" \
-  -d '{"question":"who am I working with today?","person":"Nathan"}'
+curl -s -X POST "https://YOUR_HOME_ASSISTANT_URL/api/hassio/addons/local_rota_importer/proxy/api/ha/ask"   -H "Authorization: Bearer <HOME_ASSISTANT_LONG_LIVED_TOKEN>"   -H "Content-Type: application/json"   -d '{"question":"who am I working with today?","person":"Nathan"}'
 ```
 
 Unknown question fallback:
 
 ```bash
-curl -s -X POST "http://YOUR_ADDON_HOST:8099/api/ask" \
-  -H "Authorization: Bearer <LONG_LIVED_ACCESS_TOKEN>" \
-  -H "Content-Type: application/json" \
-  -d '{"question":"can you sing me a song?"}'
+curl -s -X POST "https://YOUR_HOME_ASSISTANT_URL/api/hassio/addons/local_rota_importer/proxy/api/ha/ask"   -H "Authorization: Bearer <HOME_ASSISTANT_LONG_LIVED_TOKEN>"   -H "Content-Type: application/json"   -d '{"question":"can you sing me a song?"}'
 ```
 
 ### Example iOS Shortcut payloads
 
-For **Get Contents of URL** (method `POST`, JSON body):
+For **Get Contents of URL**:
+
+- URL: `https://YOUR_HOME_ASSISTANT_URL/api/hassio/addons/local_rota_importer/proxy/api/ha/ask`
+- Method: `POST`
+- Headers:
+  - `Authorization: Bearer <HOME_ASSISTANT_LONG_LIVED_TOKEN>`
+  - `Content-Type: application/json`
+- Request Body: JSON
+
+Payload example 1:
 
 ```json
 {
@@ -188,20 +190,12 @@ For **Get Contents of URL** (method `POST`, JSON body):
 }
 ```
 
+Payload example 2:
+
 ```json
 {
   "question": "who am I working with today?",
   "person": "Nathan"
-}
-```
-
-Success response shape:
-
-```json
-{
-  "answer": "Tom is opening tomorrow.",
-  "date": "2026-03-22",
-  "matched_intent": "opening_shift"
 }
 ```
 

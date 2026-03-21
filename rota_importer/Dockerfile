@@ -26,7 +26,7 @@ RUN apk add --no-cache \
 
 COPY run.sh /run.sh
 COPY app /app
-COPY ha_bridge_component /ha_bridge_component
+COPY ha_bridge_component /app/ha_bridge_component
 
 RUN chmod a+x /run.sh
 

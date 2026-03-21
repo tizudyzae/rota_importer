@@ -104,6 +104,18 @@ def _get_day_shifts(db_path: Path, upload_id: int, shift_date: str) -> list[sqli
         ).fetchall()
 
 
+def _extract_valid_shift_people(day_rows: list[sqlite3.Row]) -> list[str]:
+    people: list[str] = []
+    for row in day_rows:
+        name = clean_cell(row["employee"])
+        start_minutes = hhmm_to_minutes(clean_cell(row["start_time"]))
+        end_minutes = hhmm_to_minutes(clean_cell(row["end_time"]))
+        if not name or start_minutes is None or end_minutes is None or name in people:
+            continue
+        people.append(name)
+    return people
+
+
 def _get_coworkers_for_person(db_path: Path, upload_id: int, shift_date: str, person: str) -> tuple[bool, list[str]]:
     day_rows = _get_day_shifts(db_path, upload_id, shift_date)
     person_clean = person.lower()
@@ -183,11 +195,7 @@ def build_ask_response(db_path: str | Path, question: str, person: Optional[str]
 
     if matched_intent == "who_is_working_today":
         day_rows = _get_day_shifts(db_file, upload_id, resolved_date)
-        people = []
-        for row in day_rows:
-            name = clean_cell(row["employee"])
-            if name and name not in people:
-                people.append(name)
+        people = _extract_valid_shift_people(day_rows)
         if not people:
             answer = f"No one is scheduled to work {day_word}."
         elif len(people) == 1:

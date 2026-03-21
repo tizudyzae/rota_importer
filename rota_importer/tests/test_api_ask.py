@@ -22,8 +22,9 @@ def _seed_sample_data(today: str, tomorrow: str) -> None:
             (upload_id, "Nathan", "sat", "Sat", today, "08:00-16:00", "08:00", "16:00", "8", 2),
             (upload_id, "Alex", "sat", "Sat", today, "12:00-20:00", "12:00", "20:00", "8", 3),
             (upload_id, "Sam", "sat", "Sat", today, "14:00-22:00", "14:00", "22:00", "8", 4),
-            (upload_id, "Tom", "sun", "Sun", tomorrow, "06:00-14:00", "06:00", "14:00", "8", 5),
-            (upload_id, "Jill", "sun", "Sun", tomorrow, "14:00-23:00", "14:00", "23:00", "9", 6),
+            (upload_id, "Debbie", "sat", "Sat", today, "OFF", "", "", "", 5),
+            (upload_id, "Tom", "sun", "Sun", tomorrow, "06:00-14:00", "06:00", "14:00", "8", 6),
+            (upload_id, "Jill", "sun", "Sun", tomorrow, "14:00-23:00", "14:00", "23:00", "9", 7),
         ]
 
         conn.executemany(
@@ -96,6 +97,18 @@ def test_api_ask_successful_responses(tmp_path):
         "answer": "You are working with Alex, Sam, and Tom today.",
         "date": today,
         "matched_intent": "who_am_i_working_with_today",
+    }
+
+    who_is_working = client.post(
+        "/api/ask",
+        json={"question": "who is working today?"},
+        headers=headers,
+    )
+    assert who_is_working.status_code == 200
+    assert who_is_working.json() == {
+        "answer": "Tom, Nathan, Alex, and Sam are working today.",
+        "date": today,
+        "matched_intent": "who_is_working_today",
     }
 
 

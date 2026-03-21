@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from typing import Any
+import asyncio
+import logging
 import os
 
 from aiohttp import ClientError
@@ -12,7 +14,8 @@ from yarl import URL
 
 from .bridge_logic import validate_bridge_payload
 
-DEFAULT_ADDON_ASK_URL = "http://127.0.0.1:8099/api/ask"
+DEFAULT_ADDON_ASK_URL = "http://rota_importer:8099/api/ask"
+_LOGGER = logging.getLogger(__name__)
 
 
 class RotaImporterAskView(HomeAssistantView):
@@ -42,11 +45,13 @@ class RotaImporterAskView(HomeAssistantView):
             return cls.json({"error": "unauthorized"}, status_code=401)
 
         addon_ask_url = URL(os.environ.get("ROTA_IMPORTER_ADDON_ASK_URL", DEFAULT_ADDON_ASK_URL))
+        _LOGGER.info("Rota bridge resolved internal add-on ask URL: %s", addon_ask_url)
         payload: dict[str, Any] = {"question": question}
         if person is not None:
             payload["person"] = person
 
         session = async_get_clientsession(request.app["hass"])
+        _LOGGER.info("Rota bridge request start: forwarding POST %s", addon_ask_url)
         try:
             async with session.post(
                 addon_ask_url,
@@ -61,6 +66,16 @@ class RotaImporterAskView(HomeAssistantView):
                     forwarded_payload = await response.json()
                 except ValueError:
                     forwarded_payload = {"error": "Bridge upstream returned non-JSON response"}
+                if response.status != 200:
+                    _LOGGER.warning(
+                        "Rota bridge upstream non-200 response: status=%s url=%s",
+                        response.status,
+                        addon_ask_url,
+                    )
                 return cls.json(forwarded_payload, status_code=response.status)
-        except ClientError:
+        except asyncio.TimeoutError:
+            _LOGGER.error("Rota bridge timeout calling add-on ask endpoint: %s", addon_ask_url)
+            return cls.json({"error": "Bridge timed out reaching add-on ask endpoint"}, status_code=504)
+        except ClientError as err:
+            _LOGGER.error("Rota bridge connection error calling %s: %s", addon_ask_url, err)
             return cls.json({"error": "Bridge could not reach add-on ask endpoint"}, status_code=502)

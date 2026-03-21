@@ -124,6 +124,24 @@ rota_importer_bridge:
 
 After first install/update, restart Home Assistant once so the endpoint is loaded.
 
+### Internal forwarding architecture (HA container -> add-on container)
+
+The Home Assistant-native bridge endpoint (`/api/rota_importer/ask`) runs inside the **Home Assistant container** and forwards to the add-on's own ask endpoint over the internal add-on network.
+
+- Internal target used by default: `http://rota_importer:8099/api/ask`
+- `rota_importer` is the add-on network hostname/alias (slug-based), not localhost.
+- The bridge **does not** call `127.0.0.1`, because that points at the Home Assistant container itself.
+- Ingress remains unchanged and fully supported for the web UI.
+- `/api/ask` remains the single rota business-logic endpoint in the add-on.
+
+For troubleshooting, bridge logs now include:
+
+- resolved internal URL
+- request start
+- connection errors
+- timeout errors
+- upstream non-200 responses
+
 ### Authentication
 
 Send your Home Assistant long-lived access token:

@@ -22,9 +22,15 @@ from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse, Response
 from fastapi.staticfiles import StaticFiles
 
-BRIDGE_COMPONENT_DIR = Path(__file__).resolve().parents[1] / "ha_bridge_component" / "custom_components" / "rota_importer_bridge"
-if str(BRIDGE_COMPONENT_DIR) not in sys.path:
-    sys.path.append(str(BRIDGE_COMPONENT_DIR))
+_bridge_component_candidates = [
+    Path(__file__).resolve().parent / "ha_bridge_component" / "custom_components" / "rota_importer_bridge",
+    Path(__file__).resolve().parent.parent / "ha_bridge_component" / "custom_components" / "rota_importer_bridge",
+]
+for BRIDGE_COMPONENT_DIR in _bridge_component_candidates:
+    if BRIDGE_COMPONENT_DIR.exists():
+        if str(BRIDGE_COMPONENT_DIR) not in sys.path:
+            sys.path.append(str(BRIDGE_COMPONENT_DIR))
+        break
 import ask_shared
 
 APP_DIR = Path(__file__).resolve().parent

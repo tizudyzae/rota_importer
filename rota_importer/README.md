@@ -84,8 +84,134 @@ You can also use:
 
 - `/api/upload/<id>/model` to get a full viewer model for one upload.
 - `/api/viewer_sync` to get all uploads in the viewer format.
+- `/api/ask` to ask Siri-friendly rota questions with one JSON request.
 
 Use a second REST sensor or a `rest_command` and template the returned JSON into any `notify.*` service.
+
+## Siri Shortcuts / iOS automation endpoint
+
+The add-on now exposes a lightweight rule-based question endpoint:
+
+- `POST /api/ask`
+- `Content-Type: application/json`
+- `Authorization: Bearer <token>` (required)
+- Body:
+  - `question` (required string)
+  - `person` (optional string; required for "who am I working with" style questions)
+
+Authentication and security notes:
+
+- Requests without a Bearer token are rejected.
+- Invalid tokens are rejected with:
+
+```json
+{
+  "error": "unauthorized"
+}
+```
+
+- Token validation behavior:
+  - If `ASK_API_TOKEN` is set in the add-on environment, `/api/ask` requires that exact token.
+  - Otherwise the add-on validates the Bearer token against Home Assistant using `/auth/current_user` (or `ASK_AUTH_VALIDATE_URL` if set).
+- Basic in-memory per-IP rate limiting is enabled for `/api/ask` (default: 30 requests per 60 seconds).
+
+### Supported question types
+
+`/api/ask` currently matches these intents:
+
+- `who_is_working_today`
+- `who_am_i_working_with_today`
+- `opening_shift`
+- `closing_shift`
+
+Example phrases:
+
+- `who is working today?`
+- `who am I working with?`
+- `who is opening tomorrow?`
+- `who opens tomorrow?`
+- `who is closing today?`
+- `who closes today?`
+
+Date resolution rules:
+
+- `today` → current local date
+- `tomorrow` → current local date + 1 day
+- no date phrase → defaults to `today`
+
+### Opening/closing mapping
+
+This add-on does not depend on named shift labels like "open" or "close" in the PDF.
+Instead it derives them from parsed shift times:
+
+- **Opening shift** = earliest `start_time` on the resolved day
+- **Closing shift** = latest `end_time` on the resolved day
+
+If your rota uses different wording, this time-based mapping is what `/api/ask` uses.
+
+### cURL examples
+
+Who is opening tomorrow:
+
+```bash
+curl -s -X POST "http://YOUR_ADDON_HOST:8099/api/ask" \
+  -H "Authorization: Bearer <LONG_LIVED_ACCESS_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"question":"who is opening tomorrow?"}'
+```
+
+Who am I working with:
+
+```bash
+curl -s -X POST "http://YOUR_ADDON_HOST:8099/api/ask" \
+  -H "Authorization: Bearer <LONG_LIVED_ACCESS_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"question":"who am I working with today?","person":"Nathan"}'
+```
+
+Unknown question fallback:
+
+```bash
+curl -s -X POST "http://YOUR_ADDON_HOST:8099/api/ask" \
+  -H "Authorization: Bearer <LONG_LIVED_ACCESS_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"question":"can you sing me a song?"}'
+```
+
+### Example iOS Shortcut payloads
+
+For **Get Contents of URL** (method `POST`, JSON body):
+
+```json
+{
+  "question": "who is opening tomorrow?"
+}
+```
+
+```json
+{
+  "question": "who am I working with today?",
+  "person": "Nathan"
+}
+```
+
+Success response shape:
+
+```json
+{
+  "answer": "Tom is opening tomorrow.",
+  "date": "2026-03-22",
+  "matched_intent": "opening_shift"
+}
+```
+
+If `person` is missing for a person-specific question:
+
+```json
+{
+  "error": "person is required for this question type"
+}
+```
 
 ## Extract specific rota data with the API
 

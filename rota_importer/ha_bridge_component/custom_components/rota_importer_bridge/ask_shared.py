@@ -322,7 +322,9 @@ def _resolve_alias_map(db_path: Path) -> dict[str, str]:
         return {}
     resolved: dict[str, str] = {}
     for canonical, alias in payload.items():
-        canonical_clean = sanitize_person_key(str(canonical))
+        canonical_text = str(canonical).strip()
+        canonical_key = re.sub(r"^(raw:|clean:)", "", canonical_text, flags=re.IGNORECASE)
+        canonical_clean = sanitize_person_key(canonical_key)
         alias_clean = sanitize_person_key(str(alias))
         if canonical_clean and alias_clean:
             resolved[canonical_clean] = alias_clean
@@ -344,6 +346,10 @@ def _resolve_person_lookup(rows: list[sqlite3.Row], aliases: dict[str, str]) -> 
         alias = aliases.get(name)
         if alias:
             alias_to_canonical[alias.lower()] = name
+        elif lowered := name.lower():
+            alias_from_normalized_key = aliases.get(lowered)
+            if alias_from_normalized_key:
+                alias_to_canonical[alias_from_normalized_key.lower()] = name
     return alias_to_canonical, canonical_lookup, names
 
 
@@ -379,7 +385,7 @@ def _resolve_person_name(raw_name: str, rows: list[sqlite3.Row], aliases: dict[s
 
 
 def _display_name(name: str, aliases: dict[str, str]) -> str:
-    return aliases.get(name) or name
+    return aliases.get(name) or aliases.get(name.lower()) or name
 
 
 def _extract_valid_shift_people(day_rows: list[sqlite3.Row]) -> list[str]:
@@ -806,12 +812,12 @@ def build_ask_response(db_path: str | Path, question: str, person: Optional[str]
         shift = _person_shift_for_day(day_rows, subject)
         if not shift:
             return {
-                "answer": f"{_display_name(subject, aliases)} is not working on {label}.",
+                "answer": f"{_display_name(subject, aliases)} is not working {label}.",
                 "date": query.date,
                 "matched_intent": query.matched_intent,
             }
         return {
-            "answer": f"{_display_name(subject, aliases)} is working on {label} from {shift[0]} to {shift[1]}.",
+            "answer": f"{_display_name(subject, aliases)} is working {label} from {shift[0]} to {shift[1]}.",
             "date": query.date,
             "matched_intent": query.matched_intent,
         }

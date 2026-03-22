@@ -134,10 +134,11 @@ Both endpoints use the same deterministic query engine:
 Pipeline:
 
 1. Normalize free-form text (synonyms + filler-word stripping).
-2. Extract entities (person/alias), date range, and optional time.
-3. Build a structured query object.
-4. Run deterministic SQLite lookups.
-5. Return short Siri-friendly answers.
+2. Extract date/time/person signals (absolute, relative, weekday, windows).
+3. Detect intent (status, coverage, opening/closing, overlap, summary, next-shift).
+4. Build a structured query object.
+5. Run deterministic SQLite lookups.
+6. Return short Siri-friendly answers.
 
 No external AI service is used.
 
@@ -181,7 +182,10 @@ The parser now supports broad natural-language phrasings, including:
 - when are Alex and Sam next working together / share a shift / overlap
 - daily summary / weekly summary
 - dates via today, tomorrow, tonight, weekday names, this weekend, next week
+- start/finish/shift-detail questions (`when do i start`, `when do i finish`, `what shift am i on`)
 - filler phrasing such as `can you tell me`, `do you know`, `actually`, `then`, and `please`
+
+If a weekday/date is present, ask resolves that date directly and does **not** silently answer for today.
 
 ### Alias and fuzzy person matching
 
@@ -226,6 +230,39 @@ If a manager is at the opening/closing time, the manager is named first and othe
 If no manager is present at that time, the engine falls back to the normal earliest/latest answer.
 
 Management detection reuses existing add-on logic (name-based management metadata) and can be overridden via `ASK_MANAGEMENT_NAMES` (comma-separated).
+
+### Deterministic assumptions
+
+- Date resolution:
+  - `monday`/`friday` means the next occurrence from today (including today when matching day-of-week).
+  - `next monday` means the Monday in the following week.
+  - `next week` means Monday→Sunday of the next week.
+  - `this weekend` means Saturday→Sunday nearest from current week context.
+- Morning/evening windows:
+  - morning = `05:00-11:59`
+  - evening/tonight = `17:00-23:59`
+- Opening/closing:
+  - first/last is computed by earliest start / latest finish on the selected day.
+  - management names are prioritized first when tied at that start/end boundary.
+- Overlap:
+  - overlap requires time intersection (`start_a < end_b` and `end_a > start_b`).
+  - next-overlap scans forward deterministically from current local date/time and returns earliest overlap start.
+- Ambiguity:
+  - missing required person/day context returns a clear fallback (for example: `I need a date for that request.`) instead of guessing.
+
+### Extending the parser safely
+
+To add support for new phrasing without regressions:
+
+1. Add synonym normalization first (keep this purely lexical).
+2. Add extraction logic (date/person/window) before intent rules.
+3. Add one new intent mapping with a distinct `matched_intent`.
+4. Reuse structured-query fields in DB lookup code instead of adding one-off string checks.
+5. Add tests for:
+   - intent label
+   - date resolution
+   - successful answer
+   - fallback behavior for missing inputs
 
 ### Example ask requests
 

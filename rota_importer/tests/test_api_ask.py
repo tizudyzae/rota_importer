@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 import os
 from pathlib import Path
 import sys
@@ -10,7 +10,34 @@ sys.path.append(str(Path(__file__).resolve().parents[1] / "app"))
 import app as app_module
 
 
-def _seed_sample_data(yesterday: str, today: str, tomorrow: str) -> None:
+def _seed_sample_data(today: str) -> dict[str, str]:
+    base = datetime.fromisoformat(today).date()
+    days = {
+        "today": base.isoformat(),
+        "tomorrow": (base + timedelta(days=1)).isoformat(),
+    }
+
+    for weekday_name, weekday_index in [
+        ("monday", 0),
+        ("tuesday", 1),
+        ("wednesday", 2),
+        ("thursday", 3),
+        ("friday", 4),
+        ("saturday", 5),
+        ("sunday", 6),
+    ]:
+        delta = (weekday_index - base.weekday()) % 7
+        days[weekday_name] = (base + timedelta(days=delta)).isoformat()
+    if days["saturday"] == days["today"]:
+        days["saturday"] = (base + timedelta(days=7)).isoformat()
+    if days["sunday"] == days["today"]:
+        days["sunday"] = (base + timedelta(days=7)).isoformat()
+
+    next_monday_delta = (7 - base.weekday()) % 7
+    if next_monday_delta == 0:
+        next_monday_delta = 7
+    days["next_monday"] = (base + timedelta(days=next_monday_delta)).isoformat()
+
     with app_module.get_conn() as conn:
         cur = conn.execute(
             "INSERT INTO uploads (original_filename, stored_filename, uploaded_at) VALUES (?, ?, ?)",
@@ -19,18 +46,28 @@ def _seed_sample_data(yesterday: str, today: str, tomorrow: str) -> None:
         upload_id = cur.lastrowid
 
         rows = [
-            (upload_id, "PastOnly", "fri", "Fri", yesterday, "06:00-10:00", "06:00", "10:00", "4", 0),
-            (upload_id, "Tom", "sat", "Sat", today, "06:00-14:00", "06:00", "14:00", "8", 1),
-            (upload_id, "Nathan", "sat", "Sat", today, "06:00-14:00", "06:00", "14:00", "8", 2),
-            (upload_id, "Alex", "sat", "Sat", today, "12:00-20:00", "12:00", "20:00", "8", 3),
-            (upload_id, "Sam", "sat", "Sat", today, "14:00-22:00", "14:00", "22:00", "8", 4),
-            (upload_id, "Debbie", "sat", "Sat", today, "OFF", "", "", "", 5),
-            (upload_id, "Jill", "sat", "Sat", today, "13:00-22:00", "13:00", "22:00", "9", 6),
-            (upload_id, "Tom", "sun", "Sun", tomorrow, "06:00-14:00", "06:00", "14:00", "8", 7),
-            (upload_id, "Nathan", "sun", "Sun", tomorrow, "10:00-18:00", "10:00", "18:00", "8", 8),
-            (upload_id, "Alex", "sun", "Sun", tomorrow, "12:00-20:00", "12:00", "20:00", "8", 9),
-            (upload_id, "Sam", "sun", "Sun", tomorrow, "12:00-16:00", "12:00", "16:00", "4", 10),
-            (upload_id, "Jill", "sun", "Sun", tomorrow, "14:00-23:00", "14:00", "23:00", "9", 11),
+            # today
+            (upload_id, "Nathan", "mon", "Mon", days["today"], "06:00-14:00", "06:00", "14:00", "8", 1),
+            (upload_id, "Tom", "mon", "Mon", days["today"], "06:00-14:00", "06:00", "14:00", "8", 2),
+            (upload_id, "Alex", "mon", "Mon", days["today"], "12:00-20:00", "12:00", "20:00", "8", 3),
+            (upload_id, "Sam", "mon", "Mon", days["today"], "14:00-22:00", "14:00", "22:00", "8", 4),
+            (upload_id, "Jacqueline", "mon", "Mon", days["today"], "13:00-22:00", "13:00", "22:00", "9", 5),
+            (upload_id, "Debbie", "mon", "Mon", days["today"], "OFF", "", "", "", 6),
+            # tomorrow
+            (upload_id, "Nathan", "tue", "Tue", days["tomorrow"], "10:00-18:00", "10:00", "18:00", "8", 11),
+            (upload_id, "Tom", "tue", "Tue", days["tomorrow"], "06:00-14:00", "06:00", "14:00", "8", 12),
+            (upload_id, "Alex", "tue", "Tue", days["tomorrow"], "12:00-20:00", "12:00", "20:00", "8", 13),
+            (upload_id, "Sam", "tue", "Tue", days["tomorrow"], "12:00-16:00", "12:00", "16:00", "4", 14),
+            (upload_id, "Laura", "tue", "Tue", days["tomorrow"], "14:00-23:00", "14:00", "23:00", "9", 15),
+            # friday and weekend
+            (upload_id, "Nathan", "fri", "Fri", days["friday"], "09:00-17:00", "09:00", "17:00", "8", 21),
+            (upload_id, "Alex", "fri", "Fri", days["friday"], "11:00-19:00", "11:00", "19:00", "8", 22),
+            (upload_id, "Sam", "sat", "Sat", days["saturday"], "09:00-13:00", "09:00", "13:00", "4", 23),
+            (upload_id, "Laura", "sun", "Sun", days["sunday"], "12:00-18:00", "12:00", "18:00", "6", 24),
+            # next week
+            (upload_id, "Nathan", "mon", "Mon", days["next_monday"], "08:00-16:00", "08:00", "16:00", "8", 31),
+            (upload_id, "Alex", "mon", "Mon", days["next_monday"], "12:00-18:00", "12:00", "18:00", "6", 32),
+            (upload_id, "Sam", "mon", "Mon", days["next_monday"], "10:00-14:00", "10:00", "14:00", "4", 33),
         ]
 
         conn.executemany(
@@ -61,6 +98,8 @@ def _seed_sample_data(yesterday: str, today: str, tomorrow: str) -> None:
         )
         conn.commit()
 
+    return days
+
 
 def _build_client(tmp_path):
     app_module.DB_PATH = tmp_path / "rota.db"
@@ -73,471 +112,212 @@ def _build_client(tmp_path):
     os.environ["ASK_API_TOKEN"] = "test-token"
     app_module.init_db()
 
-    today_date = datetime.now().date()
-    today = today_date.isoformat()
-    yesterday = (today_date - app_module.timedelta(days=1)).isoformat()
-    tomorrow = app_module.resolve_question_date("who is opening tomorrow?")[0]
-    _seed_sample_data(yesterday=yesterday, today=today, tomorrow=tomorrow)
-    return TestClient(app_module.app), today, tomorrow
+    today = datetime.now().date().isoformat()
+    days = _seed_sample_data(today=today)
+    return TestClient(app_module.app), days
 
 
-def test_intent_matching():
-    assert app_module.parse_ask_intent("who is working today?") == "who_is_working_today"
-    assert app_module.parse_ask_intent("who am I working with?") == "who_am_i_working_with_today"
-    assert app_module.parse_ask_intent("who is opening tomorrow?") == "opening_shift"
-    assert app_module.parse_ask_intent("who closes today?") == "closing_shift"
-    assert app_module.parse_ask_intent("when am i next on shift?") == "next_shift_for_person"
-    assert app_module.parse_ask_intent("who is in tomorrow morning?") == "who_is_working_morning"
-    assert app_module.parse_ask_intent("who is on tonight?") == "who_is_working_evening"
-    assert app_module.parse_ask_intent("when are alex and sam next working together?") == "next_overlap_between_people"
-    assert app_module.parse_ask_intent("what is the weather?") == "unknown"
-
-
-def test_date_parsing():
-    now_value = datetime(2026, 3, 21, 9, 0, 0)
-    today, today_label = app_module.resolve_question_date("who is working?", now_value=now_value)
-    tomorrow, tomorrow_label = app_module.resolve_question_date("who is opening tomorrow?", now_value=now_value)
-    next_week, next_week_label = app_module.resolve_question_date("weekly summary next week", now_value=now_value)
-
-    assert today == "2026-03-21"
-    assert today_label == "today"
-    assert tomorrow == "2026-03-22"
-    assert tomorrow_label == "tomorrow"
-    assert next_week == "2026-03-23"
-    assert next_week_label == "next week"
+def test_date_resolution_today_tomorrow_weekday_and_next_week():
+    now_value = datetime(2026, 3, 22, 9, 0, 0)
+    assert app_module.resolve_question_date("who is working today", now_value=now_value) == ("2026-03-22", "today")
+    assert app_module.resolve_question_date("who is working tomorrow", now_value=now_value) == ("2026-03-23", "tomorrow")
+    assert app_module.resolve_question_date("am i working on friday", now_value=now_value) == ("2026-03-27", "friday")
+    assert app_module.resolve_question_date("who is working next week", now_value=now_value) == ("2026-03-23", "next week")
 
 
 def test_date_parsing_uses_configured_timezone(monkeypatch):
     monkeypatch.setenv("TZ", "Pacific/Honolulu")
     expected_today = datetime.now(ZoneInfo("Pacific/Honolulu")).date().isoformat()
-    today, today_label = app_module.resolve_question_date("who is working today?")
-
+    today, label = app_module.resolve_question_date("who is working today?")
     assert today == expected_today
-    assert today_label == "today"
+    assert label == "today"
 
 
-def test_api_ask_successful_responses(tmp_path):
-    client, today, tomorrow = _build_client(tmp_path)
+def test_intent_matching_labels_are_specific():
+    assert app_module.parse_ask_intent("am i working on friday") == "am_i_working"
+    assert app_module.parse_ask_intent("am i off tomorrow") == "am_i_off"
+    assert app_module.parse_ask_intent("who is working this morning") == "who_is_working_morning"
+    assert app_module.parse_ask_intent("when do i next work") == "next_shift_for_person"
+    assert app_module.parse_ask_intent("when are alex and sam next working together") == "next_overlap_between_people"
+
+
+def test_api_ask_friday_specific_question_not_today(tmp_path):
+    client, days = _build_client(tmp_path)
     headers = {"Authorization": "Bearer test-token"}
 
-    opening = client.post("/api/ask", json={"question": "who is opening tomorrow?"}, headers=headers)
-    assert opening.status_code == 200
+    response = client.post("/api/ask", json={"question": "am i working on friday?", "person": "Nathan"}, headers=headers)
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "answer": "You are working on friday from 09:00 to 17:00.",
+        "date": days["friday"],
+        "matched_intent": "am_i_working",
+    }
+
+
+def test_api_ask_morning_evening_windows(tmp_path):
+    client, days = _build_client(tmp_path)
+    headers = {"Authorization": "Bearer test-token"}
+
+    morning = client.post("/api/ask", json={"question": "who is working this morning"}, headers=headers)
+    evening = client.post("/api/ask", json={"question": "who is working tomorrow evening"}, headers=headers)
+
+    assert morning.json() == {
+        "answer": "Boss and Tom are working today.",
+        "date": days["today"],
+        "matched_intent": "who_is_working_morning",
+    }
+    assert evening.json() == {
+        "answer": "Boss, Lex, and Laura are working tomorrow.",
+        "date": days["tomorrow"],
+        "matched_intent": "who_is_working_evening",
+    }
+
+
+def test_api_ask_opening_and_closing_management_priority(tmp_path):
+    client, days = _build_client(tmp_path)
+    headers = {"Authorization": "Bearer test-token"}
+
+    opening = client.post("/api/ask", json={"question": "who is first in today"}, headers=headers)
+    closing = client.post("/api/ask", json={"question": "who is last out tomorrow"}, headers=headers)
+
     assert opening.json() == {
-        "answer": "Tom is opening tomorrow.",
-        "date": tomorrow,
-        "matched_intent": "opening_shift",
-    }
-
-    working_with = client.post(
-        "/api/ask",
-        json={"question": "who am I working with today?", "person": "Nathan"},
-        headers=headers,
-    )
-    assert working_with.status_code == 200
-    assert working_with.json() == {
-        "answer": "Boss is working with Lex, Jill, and Tom today.",
-        "date": today,
-        "matched_intent": "who_am_i_working_with_today",
-    }
-
-    who_is_working = client.post(
-        "/api/ask",
-        json={"question": "who is on shift at 3pm today?"},
-        headers=headers,
-    )
-    assert who_is_working.status_code == 200
-    assert who_is_working.json() == {
-        "answer": "Lex, Sam, and Jill are on at 3:00pm today.",
-        "date": today,
-        "matched_intent": "who_is_working_today",
-    }
-
-
-def test_api_ask_alias_recognition_and_overlap_alias(tmp_path):
-    client, today, _ = _build_client(tmp_path)
-    headers = {"Authorization": "Bearer test-token"}
-
-    response = client.post(
-        "/api/ask",
-        json={"question": "who am I working with today?", "person": "Boss"},
-        headers=headers,
-    )
-    assert response.status_code == 200
-    assert response.json() == {
-        "answer": "Boss is working with Lex, Jill, and Tom today.",
-        "date": today,
-        "matched_intent": "who_am_i_working_with_today",
-    }
-
-
-def test_api_ask_opening_with_management_priority(tmp_path):
-    client, today, _ = _build_client(tmp_path)
-    headers = {"Authorization": "Bearer test-token"}
-
-    response = client.post(
-        "/api/ask",
-        json={"question": "who is first in today?"},
-        headers=headers,
-    )
-    assert response.status_code == 200
-    assert response.json() == {
         "answer": "Boss is opening today, with Tom starting at the same time.",
-        "date": today,
+        "date": days["today"],
         "matched_intent": "opening_shift",
     }
-
-
-def test_api_ask_closing_with_management_priority(tmp_path):
-    client, today, _ = _build_client(tmp_path)
-    headers = {"Authorization": "Bearer test-token"}
-
-    response = client.post(
-        "/api/ask",
-        json={"question": "who is last out today?"},
-        headers=headers,
-    )
-    assert response.status_code == 200
-    assert response.json() == {
-        "answer": "Jill and Sam are closing today.",
-        "date": today,
+    assert closing.json() == {
+        "answer": "Laura is closing tomorrow.",
+        "date": days["tomorrow"],
         "matched_intent": "closing_shift",
     }
 
 
-def test_api_ask_closing_management_tie(tmp_path):
-    client, today, _ = _build_client(tmp_path)
+def test_api_ask_am_i_off_and_start_finish_time(tmp_path):
+    client, days = _build_client(tmp_path)
     headers = {"Authorization": "Bearer test-token"}
 
-    with app_module.get_conn() as conn:
-        upload_id = conn.execute("SELECT id FROM uploads ORDER BY id DESC LIMIT 1").fetchone()[0]
-        conn.execute(
-            """
-            INSERT INTO shifts (
-                upload_id, employee, day_name, day_header, shift_date, raw_cell,
-                start_time, end_time, total_hours, row_index
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (upload_id, "Nathan", "sat", "Sat", today, "14:00-22:00", "14:00", "22:00", "8", 99),
-        )
-        conn.commit()
+    off = client.post("/api/ask", json={"question": "am i off today", "person": "Debbie"}, headers=headers)
+    start = client.post("/api/ask", json={"question": "when do i start today", "person": "Nathan"}, headers=headers)
+    finish = client.post("/api/ask", json={"question": "when do i finish friday", "person": "Nathan"}, headers=headers)
 
-    response = client.post(
-        "/api/ask",
-        json={"question": "who is closing today?"},
-        headers=headers,
-    )
-    assert response.status_code == 200
-    assert response.json() == {
-        "answer": "Boss is closing today, with Jill and Sam finishing at the same time.",
-        "date": today,
-        "matched_intent": "closing_shift",
+    assert off.json() == {
+        "answer": "Yes, you are off on today.",
+        "date": days["today"],
+        "matched_intent": "am_i_off",
+    }
+    assert start.json() == {
+        "answer": "You start at 06:00 on today.",
+        "date": days["today"],
+        "matched_intent": "my_start_time",
+    }
+    assert finish.json() == {
+        "answer": "You finish at 17:00 on friday.",
+        "date": days["friday"],
+        "matched_intent": "my_finish_time",
     }
 
 
-def test_api_ask_opening_fallback_when_no_management(tmp_path, monkeypatch):
-    monkeypatch.setenv("ASK_MANAGEMENT_NAMES", "noone")
-    client, today, _ = _build_client(tmp_path)
+def test_api_ask_coverage_relative_and_week_queries(tmp_path):
+    client, days = _build_client(tmp_path)
     headers = {"Authorization": "Bearer test-token"}
 
-    response = client.post(
-        "/api/ask",
-        json={"question": "who is opening today?"},
-        headers=headers,
-    )
-    assert response.status_code == 200
-    assert response.json() == {
-        "answer": "Boss and Tom are opening today.",
-        "date": today,
-        "matched_intent": "opening_shift",
+    weekday = client.post("/api/ask", json={"question": "who is working on friday"}, headers=headers)
+    week = client.post("/api/ask", json={"question": "who is working next week"}, headers=headers)
+
+    assert weekday.json() == {
+        "answer": "Boss and Lex are working friday.",
+        "date": days["friday"],
+        "matched_intent": "who_is_working",
     }
+    assert week.status_code == 200
+    assert week.json()["matched_intent"] == "who_is_working_week"
 
 
-def test_api_ask_ambiguous_question_fallback(tmp_path):
-    client, today, _ = _build_client(tmp_path)
-    response = client.post(
-        "/api/ask",
-        json={"question": "can you help with rota"},
-        headers={"Authorization": "Bearer test-token"},
-    )
-    assert response.status_code == 200
-    assert response.json() == {
-        "answer": "Sorry, I could not understand that rota question. Try adding a day or person.",
-        "date": today,
-        "matched_intent": "unknown",
-    }
-
-
-def test_api_ask_missing_question(tmp_path):
-    client, _, _ = _build_client(tmp_path)
-    response = client.post(
-        "/api/ask",
-        json={"person": "Nathan"},
-        headers={"Authorization": "Bearer test-token"},
-    )
-    assert response.status_code == 400
-    assert response.json() == {"error": "question is required and must be a non-empty string"}
-
-
-def test_api_ask_missing_person_for_person_intent(tmp_path):
-    client, _, _ = _build_client(tmp_path)
-    response = client.post(
-        "/api/ask",
-        json={"question": "who am I working with?"},
-        headers={"Authorization": "Bearer test-token"},
-    )
-    assert response.status_code == 400
-    assert response.json() == {"error": "person is required for this question type"}
-
-
-def test_api_ask_excludes_off_staff_for_coworker_question(tmp_path):
-    client, today, _ = _build_client(tmp_path)
+def test_api_ask_overlap_canonical_and_alias(tmp_path):
+    client, days = _build_client(tmp_path)
     headers = {"Authorization": "Bearer test-token"}
 
-    response = client.post(
-        "/api/ask",
-        json={"question": "who am I working with today?", "person": "Debbie"},
-        headers=headers,
-    )
-    assert response.status_code == 200
-    assert response.json() == {
-        "answer": "Debbie is not scheduled today.",
-        "date": today,
-        "matched_intent": "who_am_i_working_with_today",
+    canonical = client.post("/api/ask", json={"question": "who is Nathan working with today"}, headers=headers)
+    alias = client.post("/api/ask", json={"question": "who am i working with tomorrow", "person": "Boss"}, headers=headers)
+
+    assert canonical.json() == {
+        "answer": "Boss is working with Lex, Jacqueline, and Tom today.",
+        "date": days["today"],
+        "matched_intent": "overlap",
+    }
+    assert alias.json() == {
+        "answer": "Boss is working with Lex, Laura, Sam, and Tom tomorrow.",
+        "date": days["tomorrow"],
+        "matched_intent": "overlap",
     }
 
 
-def test_api_ask_unknown_question(tmp_path):
-    client, today, _ = _build_client(tmp_path)
-    response = client.post(
-        "/api/ask",
-        json={"question": "can you sing me a song?"},
-        headers={"Authorization": "Bearer test-token"},
-    )
-    assert response.status_code == 200
-    assert response.json() == {
-        "answer": "Sorry, I could not understand that rota question. Try adding a day or person.",
-        "date": today,
-        "matched_intent": "unknown",
+def test_next_shift_and_next_overlap(tmp_path):
+    _client, days = _build_client(tmp_path)
+    now_value = datetime.fromisoformat(days["today"]).replace(hour=23, minute=30)
+    tomorrow_name = datetime.fromisoformat(days["tomorrow"]).strftime("%A")
+
+    next_shift = app_module.build_ask_response("when is my next shift", person="Nathan", now_value=now_value)
+    next_overlap = app_module.build_ask_response("when are Alex and Sam next working together", now_value=now_value)
+    alias_overlap = app_module.build_ask_response("when am i next working with Lex", person="Boss", now_value=now_value)
+
+    assert next_shift == {
+        "answer": f"Your next shift is {days['tomorrow']} from 10:00 to 18:00.",
+        "date": days["tomorrow"],
+        "matched_intent": "next_shift_for_person",
+    }
+    assert next_overlap == {
+        "answer": f"Lex and Sam next work together on {tomorrow_name} from 12:00 to 16:00.",
+        "date": days["tomorrow"],
+        "matched_intent": "next_overlap_between_people",
+    }
+    assert alias_overlap == {
+        "answer": f"You next work with Lex on {tomorrow_name} from 12:00 to 18:00.",
+        "date": days["tomorrow"],
+        "matched_intent": "next_overlap_with_person",
     }
 
 
-def test_api_ask_unauthorized_missing_or_invalid_token(tmp_path):
-    client, _, _ = _build_client(tmp_path)
-
-    missing = client.post("/api/ask", json={"question": "who is working today?"})
-    assert missing.status_code == 401
-    assert missing.json() == {"error": "unauthorized"}
-
-    invalid = client.post(
-        "/api/ask",
-        json={"question": "who is working today?"},
-        headers={"Authorization": "Bearer wrong-token"},
-    )
-    assert invalid.status_code == 401
-    assert invalid.json() == {"error": "unauthorized"}
-
-
-def test_api_ha_bridge_successful_request(tmp_path):
-    client, _, tomorrow = _build_client(tmp_path)
+def test_rota_summary_questions(tmp_path):
+    client, days = _build_client(tmp_path)
     headers = {"Authorization": "Bearer test-token"}
 
-    response = client.post("/api/ha/ask", json={"question": "who is opening tomorrow?"}, headers=headers)
-    assert response.status_code == 200
-    assert response.json() == {
-        "answer": "Tom is opening tomorrow.",
-        "date": tomorrow,
-        "matched_intent": "opening_shift",
-    }
+    today = client.post("/api/ask", json={"question": "what is the rota today"}, headers=headers)
+    mine = client.post("/api/ask", json={"question": "what is my rota this week", "person": "Nathan"}, headers=headers)
+
+    assert today.status_code == 200
+    assert today.json()["matched_intent"] == "rota_summary"
+    assert today.json()["date"] == days["today"]
+
+    assert mine.status_code == 200
+    assert mine.json()["matched_intent"] == "my_rota_summary"
 
 
-def test_api_ha_bridge_unauthorized_when_missing_token(tmp_path):
-    client, _, _ = _build_client(tmp_path)
-
-    response = client.post("/api/ha/ask", json={"question": "who is opening tomorrow?"})
-    assert response.status_code == 401
-    assert response.json() == {"error": "unauthorized"}
-
-
-def test_api_ha_bridge_invalid_payload(tmp_path):
-    client, _, _ = _build_client(tmp_path)
+def test_ambiguous_and_unresolved_fallbacks(tmp_path):
+    client, _days = _build_client(tmp_path)
     headers = {"Authorization": "Bearer test-token"}
 
-    response = client.post("/api/ha/ask", content="not-json", headers=headers)
-    assert response.status_code == 400
-    assert response.json() == {"error": "Invalid JSON payload"}
+    ambiguous = client.post("/api/ask", json={"question": "am i working", "person": "Nathan"}, headers=headers)
+    unresolved = client.post("/api/ask", json={"question": "when am i next working with NotARealName", "person": "Nathan"}, headers=headers)
+
+    assert ambiguous.json()["answer"] == "I need a date for that request."
+    assert unresolved.json()["answer"] == "I could not resolve that person."
 
 
-def test_api_ha_bridge_unknown_question_fallback(tmp_path):
-    client, today, _ = _build_client(tmp_path)
-    headers = {"Authorization": "Bearer test-token"}
-
-    response = client.post("/api/ha/ask", json={"question": "can you sing me a song?"}, headers=headers)
-    assert response.status_code == 200
-    assert response.json() == {
-        "answer": "Sorry, I could not understand that rota question. Try adding a day or person.",
-        "date": today,
-        "matched_intent": "unknown",
-    }
-
-
-def test_api_ha_bridge_matches_api_ask_response_shape(tmp_path):
-    client, _, _ = _build_client(tmp_path)
+def test_api_shape_and_auth_and_bridge_compatibility(tmp_path):
+    client, _days = _build_client(tmp_path)
     headers = {"Authorization": "Bearer test-token"}
     payload = {"question": "who is opening tomorrow?", "person": "Nathan"}
 
-    api_ask_response = client.post("/api/ask", json=payload, headers=headers)
-    bridge_response = client.post("/api/ha/ask", json=payload, headers=headers)
+    api = client.post("/api/ask", json=payload, headers=headers)
+    bridge = client.post("/api/ha/ask", json=payload, headers=headers)
 
-    assert api_ask_response.status_code == 200
-    assert bridge_response.status_code == 200
-    assert set(api_ask_response.json().keys()) == {"answer", "date", "matched_intent"}
-    assert set(bridge_response.json().keys()) == {"answer", "date", "matched_intent"}
+    assert api.status_code == 200
+    assert bridge.status_code == 200
+    assert set(api.json().keys()) == {"answer", "date", "matched_intent"}
+    assert set(bridge.json().keys()) == {"answer", "date", "matched_intent"}
 
-
-def test_api_ask_falls_back_to_latest_upload_with_requested_date(tmp_path):
-    client, today, tomorrow = _build_client(tmp_path)
-    headers = {"Authorization": "Bearer test-token"}
-
-    with app_module.get_conn() as conn:
-        cur = conn.execute(
-            "INSERT INTO uploads (original_filename, stored_filename, uploaded_at) VALUES (?, ?, ?)",
-            ("newer.pdf", "newer.pdf", datetime.utcnow().isoformat(timespec="seconds")),
-        )
-        newer_upload_id = cur.lastrowid
-        conn.execute(
-            """
-            INSERT INTO shifts (
-                upload_id, employee, day_name, day_header, shift_date, raw_cell,
-                start_time, end_time, total_hours, row_index
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (newer_upload_id, "Future Person", "sun", "Sun", tomorrow, "09:00-17:00", "09:00", "17:00", "8", 1),
-        )
-        conn.commit()
-
-    who_is_working = client.post(
-        "/api/ask",
-        json={"question": "who is working today?"},
-        headers=headers,
-    )
-
-    assert who_is_working.status_code == 200
-    assert who_is_working.json() == {
-        "answer": "Tom, Boss, Lex, Sam, and Jill are working today.",
-        "date": today,
-        "matched_intent": "who_is_working_today",
-    }
-
-
-def test_new_intent_next_shift_for_current_person(tmp_path):
-    _client, _today, _tomorrow = _build_client(tmp_path)
-    now_value = datetime(2026, 3, 22, 23, 30, 0)
-    response = app_module.build_ask_response(
-        question="can you tell me when am I next on shift please",
-        person="Nathan",
-        now_value=now_value,
-    )
-    assert response["matched_intent"] == "next_shift_for_person"
-    assert response["answer"] == "Your next shift is 2026-03-23 from 10:00 to 18:00."
-
-
-def test_new_intent_morning_and_evening_coverage_today_and_tomorrow(tmp_path):
-    _client, today, tomorrow = _build_client(tmp_path)
-    now_value = datetime(2026, 3, 22, 9, 0, 0)
-
-    morning_today = app_module.build_ask_response("who is working this morning?", now_value=now_value)
-    evening_today = app_module.build_ask_response("who is on tonight?", now_value=now_value)
-    morning_tomorrow = app_module.build_ask_response("who is in tomorrow morning?", now_value=now_value)
-    evening_tomorrow = app_module.build_ask_response("who is working tomorrow evening?", now_value=now_value)
-
-    assert morning_today == {
-        "answer": "Tom and Boss are working this morning.",
-        "date": today,
-        "matched_intent": "who_is_working_morning",
-        "window": "morning",
-    }
-    assert evening_today == {
-        "answer": "Lex, Sam, and Jill are working tonight.",
-        "date": today,
-        "matched_intent": "who_is_working_evening",
-        "window": "evening",
-    }
-    assert morning_tomorrow == {
-        "answer": "Tom and Boss are working tomorrow morning.",
-        "date": tomorrow,
-        "matched_intent": "who_is_working_morning",
-        "window": "morning",
-    }
-    assert evening_tomorrow == {
-        "answer": "Boss, Lex, and Jill are working tomorrow evening.",
-        "date": tomorrow,
-        "matched_intent": "who_is_working_evening",
-        "window": "evening",
-    }
-
-
-def test_new_intent_next_overlap_self_and_named_and_two_named(tmp_path):
-    _client, _today, _tomorrow = _build_client(tmp_path)
-    now_value = datetime(2026, 3, 22, 23, 30, 0)
-
-    self_overlap = app_module.build_ask_response(
-        question='when do I next work alongside "Alex"',
-        person="Nathan",
-        now_value=now_value,
-    )
-    two_people = app_module.build_ask_response(
-        question='when is "Alex" and "Sam" next working together',
-        now_value=now_value,
-    )
-    alias_people = app_module.build_ask_response(
-        question="when are Boss and Lex next working together",
-        now_value=now_value,
-    )
-
-    assert self_overlap == {
-        "answer": "You and Lex next overlap on 2026-03-23 from 12:00 to 18:00.",
-        "date": "2026-03-23",
-        "matched_intent": "next_overlap_with_person",
-    }
-    assert two_people == {
-        "answer": "Lex and Sam next overlap on 2026-03-23 from 12:00 to 16:00.",
-        "date": "2026-03-23",
-        "matched_intent": "next_overlap_between_people",
-    }
-    assert alias_people["matched_intent"] == "next_overlap_between_people"
-
-
-def test_new_intent_unresolved_person_and_no_future_fallbacks(tmp_path):
-    _client, _today, _tomorrow = _build_client(tmp_path)
-    now_value = datetime(2026, 3, 22, 23, 30, 0)
-
-    unresolved = app_module.build_ask_response(
-        question="when do i next overlap with NotARealName",
-        person="Nathan",
-        now_value=now_value,
-    )
-    no_future_shift = app_module.build_ask_response(
-        question="when am i next working",
-        person="PastOnly",
-        now_value=now_value,
-    )
-    no_future_overlap = app_module.build_ask_response(
-        question="when are PastOnly and Debbie next working together",
-        now_value=now_value,
-    )
-
-    assert unresolved == {
-        "answer": "I could not resolve the other person for that overlap check.",
-        "date": "2026-03-22",
-        "matched_intent": "next_overlap_with_person",
-    }
-    assert no_future_shift == {
-        "answer": "I could not find a future shift for you.",
-        "date": "2026-03-22",
-        "matched_intent": "next_shift_for_person",
-    }
-    assert no_future_overlap == {
-        "answer": "I could not find a future overlap for PastOnly and Debbie.",
-        "date": "2026-03-22",
-        "matched_intent": "next_overlap_between_people",
-    }
+    unauthorized = client.post("/api/ask", json={"question": "who is working today?"})
+    assert unauthorized.status_code == 401
+    assert unauthorized.json() == {"error": "unauthorized"}

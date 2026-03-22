@@ -124,23 +124,22 @@ rota_importer_bridge:
 
 After first install/update, restart Home Assistant once so the endpoint is loaded.
 
-### Internal forwarding architecture (HA container -> add-on container)
+### Shared query engine architecture
 
-The Home Assistant-native bridge endpoint (`/api/rota_importer/ask`) runs inside the **Home Assistant container** and forwards to the add-on's own ask endpoint over the internal add-on network.
+Both endpoints use the same deterministic query engine:
 
-- Internal target used by default: `http://addon_rota_importer:8099/api/ask`
-- `addon_rota_importer` is the add-on network hostname/alias, not localhost.
-- The bridge **does not** call `127.0.0.1`, because that points at the Home Assistant container itself.
-- Ingress remains unchanged and fully supported for the web UI.
-- `/api/ask` remains the single rota business-logic endpoint in the add-on.
+- add-on API: `/api/ask`
+- HA bridge API: `/api/rota_importer/ask`
 
-For troubleshooting, bridge logs now include:
+Pipeline:
 
-- resolved internal URL
-- request start
-- connection errors
-- timeout errors
-- upstream non-200 responses
+1. Normalize free-form text (synonyms + filler-word stripping).
+2. Extract entities (person/alias), date range, and optional time.
+3. Build a structured query object.
+4. Run deterministic SQLite lookups.
+5. Return short Siri-friendly answers.
+
+No external AI service is used.
 
 ### Authentication
 
@@ -163,6 +162,67 @@ Authorization: Bearer <HOME_ASSISTANT_LONG_LIVED_TOKEN>
 
 - `question` is required.
 - `person` is optional unless the question intent needs it.
+
+
+### Supported ask phrasing categories
+
+The parser now supports broad natural-language phrasings, including:
+
+- who is working / who is in / who is on shift
+- who is opening / first in
+- who is closing / last out
+- am I working / am I in / am I off
+- who am I working with / who is <person> working with / overlap
+- who is on at 3pm (time-specific checks)
+- daily summary / weekly summary
+- dates via today, tomorrow, tonight, weekday names, this weekend, next week
+
+### Alias and fuzzy person matching
+
+Ask uses existing alias settings from `app_preferences.alias_preferences` (same source used elsewhere in the add-on).
+
+Matching order is deterministic:
+
+1. exact alias match
+2. exact canonical employee-name match
+3. fuzzy match
+
+Aliases work for direct person queries and coworker/overlap queries.
+
+### Opening/closing management priority
+
+For opening/closing questions, answer selection supports four internal modes:
+
+- earliest start overall
+- latest finish overall
+- management-led opening
+- management-led closing
+
+Default spoken opening/closing answers use management-led mode when management data is available.
+If a manager is at the opening/closing time, the manager is named first and other staff at the exact same start/end time are appended.
+If no manager is present at that time, the engine falls back to the normal earliest/latest answer.
+
+Management detection reuses existing add-on logic (name-based management metadata) and can be overridden via `ASK_MANAGEMENT_NAMES` (comma-separated).
+
+### Example ask requests
+
+```json
+{ "question": "who is on at 3pm today?" }
+```
+
+```json
+{ "question": "who is boss working with tomorrow?" }
+```
+
+```json
+{ "question": "who is first in tomorrow?" }
+```
+
+```json
+{ "question": "weekly rota summary next week" }
+```
+
+Ambiguous/unsupported questions return a short fallback answer prompting for day or person context.
 
 ### Response JSON shape
 

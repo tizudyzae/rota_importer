@@ -20,12 +20,13 @@ def _seed_sample_data(today: str, tomorrow: str) -> None:
 
         rows = [
             (upload_id, "Tom", "sat", "Sat", today, "06:00-14:00", "06:00", "14:00", "8", 1),
-            (upload_id, "Nathan", "sat", "Sat", today, "08:00-16:00", "08:00", "16:00", "8", 2),
+            (upload_id, "Nathan", "sat", "Sat", today, "06:00-14:00", "06:00", "14:00", "8", 2),
             (upload_id, "Alex", "sat", "Sat", today, "12:00-20:00", "12:00", "20:00", "8", 3),
             (upload_id, "Sam", "sat", "Sat", today, "14:00-22:00", "14:00", "22:00", "8", 4),
             (upload_id, "Debbie", "sat", "Sat", today, "OFF", "", "", "", 5),
-            (upload_id, "Tom", "sun", "Sun", tomorrow, "06:00-14:00", "06:00", "14:00", "8", 6),
-            (upload_id, "Jill", "sun", "Sun", tomorrow, "14:00-23:00", "14:00", "23:00", "9", 7),
+            (upload_id, "Jill", "sat", "Sat", today, "13:00-22:00", "13:00", "22:00", "9", 6),
+            (upload_id, "Tom", "sun", "Sun", tomorrow, "06:00-14:00", "06:00", "14:00", "8", 7),
+            (upload_id, "Jill", "sun", "Sun", tomorrow, "14:00-23:00", "14:00", "23:00", "9", 8),
         ]
 
         conn.executemany(
@@ -36,6 +37,23 @@ def _seed_sample_data(today: str, tomorrow: str) -> None:
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             rows,
+        )
+
+        conn.execute(
+            """
+            INSERT INTO app_preferences (singleton_key, color_preferences, alias_preferences, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(singleton_key) DO UPDATE SET
+              color_preferences=excluded.color_preferences,
+              alias_preferences=excluded.alias_preferences,
+              updated_at=excluded.updated_at
+            """,
+            (
+                "global",
+                "{}",
+                '{"Nathan": "Boss", "Alex": "Lex"}',
+                datetime.utcnow().isoformat(timespec="seconds"),
+            ),
         )
         conn.commit()
 
@@ -69,11 +87,14 @@ def test_date_parsing():
     now_value = datetime(2026, 3, 21, 9, 0, 0)
     today, today_label = app_module.resolve_question_date("who is working?", now_value=now_value)
     tomorrow, tomorrow_label = app_module.resolve_question_date("who is opening tomorrow?", now_value=now_value)
+    next_week, next_week_label = app_module.resolve_question_date("weekly summary next week", now_value=now_value)
 
     assert today == "2026-03-21"
     assert today_label == "today"
     assert tomorrow == "2026-03-22"
     assert tomorrow_label == "tomorrow"
+    assert next_week == "2026-03-23"
+    assert next_week_label == "next week"
 
 
 def test_date_parsing_uses_configured_timezone(monkeypatch):
@@ -104,21 +125,135 @@ def test_api_ask_successful_responses(tmp_path):
     )
     assert working_with.status_code == 200
     assert working_with.json() == {
-        "answer": "You are working with Alex, Sam, and Tom today.",
+        "answer": "Boss is working with Lex, Jill, and Tom today.",
         "date": today,
         "matched_intent": "who_am_i_working_with_today",
     }
 
     who_is_working = client.post(
         "/api/ask",
-        json={"question": "who is working today?"},
+        json={"question": "who is on shift at 3pm today?"},
         headers=headers,
     )
     assert who_is_working.status_code == 200
     assert who_is_working.json() == {
-        "answer": "Tom, Nathan, Alex, and Sam are working today.",
+        "answer": "Lex, Sam, and Jill are on at 3:00pm today.",
         "date": today,
         "matched_intent": "who_is_working_today",
+    }
+
+
+def test_api_ask_alias_recognition_and_overlap_alias(tmp_path):
+    client, today, _ = _build_client(tmp_path)
+    headers = {"Authorization": "Bearer test-token"}
+
+    response = client.post(
+        "/api/ask",
+        json={"question": "who am I working with today?", "person": "Boss"},
+        headers=headers,
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "answer": "Boss is working with Lex, Jill, and Tom today.",
+        "date": today,
+        "matched_intent": "who_am_i_working_with_today",
+    }
+
+
+def test_api_ask_opening_with_management_priority(tmp_path):
+    client, today, _ = _build_client(tmp_path)
+    headers = {"Authorization": "Bearer test-token"}
+
+    response = client.post(
+        "/api/ask",
+        json={"question": "who is first in today?"},
+        headers=headers,
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "answer": "Boss is opening today, with Tom starting at the same time.",
+        "date": today,
+        "matched_intent": "opening_shift",
+    }
+
+
+def test_api_ask_closing_with_management_priority(tmp_path):
+    client, today, _ = _build_client(tmp_path)
+    headers = {"Authorization": "Bearer test-token"}
+
+    response = client.post(
+        "/api/ask",
+        json={"question": "who is last out today?"},
+        headers=headers,
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "answer": "Jill and Sam are closing today.",
+        "date": today,
+        "matched_intent": "closing_shift",
+    }
+
+
+def test_api_ask_closing_management_tie(tmp_path):
+    client, today, _ = _build_client(tmp_path)
+    headers = {"Authorization": "Bearer test-token"}
+
+    with app_module.get_conn() as conn:
+        upload_id = conn.execute("SELECT id FROM uploads ORDER BY id DESC LIMIT 1").fetchone()[0]
+        conn.execute(
+            """
+            INSERT INTO shifts (
+                upload_id, employee, day_name, day_header, shift_date, raw_cell,
+                start_time, end_time, total_hours, row_index
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (upload_id, "Nathan", "sat", "Sat", today, "14:00-22:00", "14:00", "22:00", "8", 99),
+        )
+        conn.commit()
+
+    response = client.post(
+        "/api/ask",
+        json={"question": "who is closing today?"},
+        headers=headers,
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "answer": "Boss is closing today, with Jill and Sam finishing at the same time.",
+        "date": today,
+        "matched_intent": "closing_shift",
+    }
+
+
+def test_api_ask_opening_fallback_when_no_management(tmp_path, monkeypatch):
+    monkeypatch.setenv("ASK_MANAGEMENT_NAMES", "noone")
+    client, today, _ = _build_client(tmp_path)
+    headers = {"Authorization": "Bearer test-token"}
+
+    response = client.post(
+        "/api/ask",
+        json={"question": "who is opening today?"},
+        headers=headers,
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "answer": "Boss and Tom are opening today.",
+        "date": today,
+        "matched_intent": "opening_shift",
+    }
+
+
+def test_api_ask_ambiguous_question_fallback(tmp_path):
+    client, today, _ = _build_client(tmp_path)
+    response = client.post(
+        "/api/ask",
+        json={"question": "can you help with rota"},
+        headers={"Authorization": "Bearer test-token"},
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "answer": "Sorry, I could not understand that rota question. Try adding a day or person.",
+        "date": today,
+        "matched_intent": "unknown",
     }
 
 
@@ -155,7 +290,7 @@ def test_api_ask_excludes_off_staff_for_coworker_question(tmp_path):
     )
     assert response.status_code == 200
     assert response.json() == {
-        "answer": "Debbie is not scheduled to work today.",
+        "answer": "Debbie is not scheduled today.",
         "date": today,
         "matched_intent": "who_am_i_working_with_today",
     }
@@ -170,7 +305,7 @@ def test_api_ask_unknown_question(tmp_path):
     )
     assert response.status_code == 200
     assert response.json() == {
-        "answer": "Sorry, I could not understand that rota question.",
+        "answer": "Sorry, I could not understand that rota question. Try adding a day or person.",
         "date": today,
         "matched_intent": "unknown",
     }
@@ -229,7 +364,7 @@ def test_api_ha_bridge_unknown_question_fallback(tmp_path):
     response = client.post("/api/ha/ask", json={"question": "can you sing me a song?"}, headers=headers)
     assert response.status_code == 200
     assert response.json() == {
-        "answer": "Sorry, I could not understand that rota question.",
+        "answer": "Sorry, I could not understand that rota question. Try adding a day or person.",
         "date": today,
         "matched_intent": "unknown",
     }
@@ -278,7 +413,7 @@ def test_api_ask_falls_back_to_latest_upload_with_requested_date(tmp_path):
 
     assert who_is_working.status_code == 200
     assert who_is_working.json() == {
-        "answer": "Tom, Nathan, Alex, and Sam are working today.",
+        "answer": "Tom, Boss, Lex, Sam, and Jill are working today.",
         "date": today,
         "matched_intent": "who_is_working_today",
     }

@@ -92,7 +92,7 @@ def _seed_sample_data(today: str) -> dict[str, str]:
             (
                 "global",
                 "{}",
-                '{"Nathan": "Boss", "Alex": "Lex"}',
+                '{"raw:nathan": "Boss", "raw:alex": "Lex"}',
                 datetime.utcnow().isoformat(timespec="seconds"),
             ),
         )
@@ -265,7 +265,7 @@ def test_api_ask_specific_person_time_on_weekday(tmp_path):
     )
     assert response.status_code == 200
     assert response.json() == {
-        "answer": "Lex is working on friday from 11:00 to 19:00.",
+        "answer": "Lex is working friday from 11:00 to 19:00.",
         "date": days["friday"],
         "matched_intent": "person_shift_time",
     }
@@ -288,13 +288,13 @@ def test_api_ask_specific_person_time_alias_and_not_working(tmp_path):
 
     assert alias.status_code == 200
     assert alias.json() == {
-        "answer": "Boss is working on friday from 09:00 to 17:00.",
+        "answer": "Boss is working friday from 09:00 to 17:00.",
         "date": days["friday"],
         "matched_intent": "person_shift_time",
     }
     assert off.status_code == 200
     assert off.json() == {
-        "answer": "Debbie is not working on friday.",
+        "answer": "Debbie is not working friday.",
         "date": days["friday"],
         "matched_intent": "person_shift_time",
     }

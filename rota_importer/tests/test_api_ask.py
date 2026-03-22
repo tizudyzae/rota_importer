@@ -10,7 +10,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1] / "app"))
 import app as app_module
 
 
-def _seed_sample_data(today: str, tomorrow: str) -> None:
+def _seed_sample_data(yesterday: str, today: str, tomorrow: str) -> None:
     with app_module.get_conn() as conn:
         cur = conn.execute(
             "INSERT INTO uploads (original_filename, stored_filename, uploaded_at) VALUES (?, ?, ?)",
@@ -19,6 +19,7 @@ def _seed_sample_data(today: str, tomorrow: str) -> None:
         upload_id = cur.lastrowid
 
         rows = [
+            (upload_id, "PastOnly", "fri", "Fri", yesterday, "06:00-10:00", "06:00", "10:00", "4", 0),
             (upload_id, "Tom", "sat", "Sat", today, "06:00-14:00", "06:00", "14:00", "8", 1),
             (upload_id, "Nathan", "sat", "Sat", today, "06:00-14:00", "06:00", "14:00", "8", 2),
             (upload_id, "Alex", "sat", "Sat", today, "12:00-20:00", "12:00", "20:00", "8", 3),
@@ -26,7 +27,10 @@ def _seed_sample_data(today: str, tomorrow: str) -> None:
             (upload_id, "Debbie", "sat", "Sat", today, "OFF", "", "", "", 5),
             (upload_id, "Jill", "sat", "Sat", today, "13:00-22:00", "13:00", "22:00", "9", 6),
             (upload_id, "Tom", "sun", "Sun", tomorrow, "06:00-14:00", "06:00", "14:00", "8", 7),
-            (upload_id, "Jill", "sun", "Sun", tomorrow, "14:00-23:00", "14:00", "23:00", "9", 8),
+            (upload_id, "Nathan", "sun", "Sun", tomorrow, "10:00-18:00", "10:00", "18:00", "8", 8),
+            (upload_id, "Alex", "sun", "Sun", tomorrow, "12:00-20:00", "12:00", "20:00", "8", 9),
+            (upload_id, "Sam", "sun", "Sun", tomorrow, "12:00-16:00", "12:00", "16:00", "4", 10),
+            (upload_id, "Jill", "sun", "Sun", tomorrow, "14:00-23:00", "14:00", "23:00", "9", 11),
         ]
 
         conn.executemany(
@@ -69,9 +73,11 @@ def _build_client(tmp_path):
     os.environ["ASK_API_TOKEN"] = "test-token"
     app_module.init_db()
 
-    today = datetime.now().date().isoformat()
+    today_date = datetime.now().date()
+    today = today_date.isoformat()
+    yesterday = (today_date - app_module.timedelta(days=1)).isoformat()
     tomorrow = app_module.resolve_question_date("who is opening tomorrow?")[0]
-    _seed_sample_data(today=today, tomorrow=tomorrow)
+    _seed_sample_data(yesterday=yesterday, today=today, tomorrow=tomorrow)
     return TestClient(app_module.app), today, tomorrow
 
 
@@ -80,6 +86,10 @@ def test_intent_matching():
     assert app_module.parse_ask_intent("who am I working with?") == "who_am_i_working_with_today"
     assert app_module.parse_ask_intent("who is opening tomorrow?") == "opening_shift"
     assert app_module.parse_ask_intent("who closes today?") == "closing_shift"
+    assert app_module.parse_ask_intent("when am i next on shift?") == "next_shift_for_person"
+    assert app_module.parse_ask_intent("who is in tomorrow morning?") == "who_is_working_morning"
+    assert app_module.parse_ask_intent("who is on tonight?") == "who_is_working_evening"
+    assert app_module.parse_ask_intent("when are alex and sam next working together?") == "next_overlap_between_people"
     assert app_module.parse_ask_intent("what is the weather?") == "unknown"
 
 
@@ -416,4 +426,118 @@ def test_api_ask_falls_back_to_latest_upload_with_requested_date(tmp_path):
         "answer": "Tom, Boss, Lex, Sam, and Jill are working today.",
         "date": today,
         "matched_intent": "who_is_working_today",
+    }
+
+
+def test_new_intent_next_shift_for_current_person(tmp_path):
+    _client, _today, _tomorrow = _build_client(tmp_path)
+    now_value = datetime(2026, 3, 22, 23, 30, 0)
+    response = app_module.build_ask_response(
+        question="can you tell me when am I next on shift please",
+        person="Nathan",
+        now_value=now_value,
+    )
+    assert response["matched_intent"] == "next_shift_for_person"
+    assert response["answer"] == "Your next shift is 2026-03-23 from 10:00 to 18:00."
+
+
+def test_new_intent_morning_and_evening_coverage_today_and_tomorrow(tmp_path):
+    _client, today, tomorrow = _build_client(tmp_path)
+    now_value = datetime(2026, 3, 22, 9, 0, 0)
+
+    morning_today = app_module.build_ask_response("who is working this morning?", now_value=now_value)
+    evening_today = app_module.build_ask_response("who is on tonight?", now_value=now_value)
+    morning_tomorrow = app_module.build_ask_response("who is in tomorrow morning?", now_value=now_value)
+    evening_tomorrow = app_module.build_ask_response("who is working tomorrow evening?", now_value=now_value)
+
+    assert morning_today == {
+        "answer": "Tom and Boss are working this morning.",
+        "date": today,
+        "matched_intent": "who_is_working_morning",
+        "window": "morning",
+    }
+    assert evening_today == {
+        "answer": "Lex, Sam, and Jill are working tonight.",
+        "date": today,
+        "matched_intent": "who_is_working_evening",
+        "window": "evening",
+    }
+    assert morning_tomorrow == {
+        "answer": "Tom and Boss are working tomorrow morning.",
+        "date": tomorrow,
+        "matched_intent": "who_is_working_morning",
+        "window": "morning",
+    }
+    assert evening_tomorrow == {
+        "answer": "Boss, Lex, and Jill are working tomorrow evening.",
+        "date": tomorrow,
+        "matched_intent": "who_is_working_evening",
+        "window": "evening",
+    }
+
+
+def test_new_intent_next_overlap_self_and_named_and_two_named(tmp_path):
+    _client, _today, _tomorrow = _build_client(tmp_path)
+    now_value = datetime(2026, 3, 22, 23, 30, 0)
+
+    self_overlap = app_module.build_ask_response(
+        question='when do I next work alongside "Alex"',
+        person="Nathan",
+        now_value=now_value,
+    )
+    two_people = app_module.build_ask_response(
+        question='when is "Alex" and "Sam" next working together',
+        now_value=now_value,
+    )
+    alias_people = app_module.build_ask_response(
+        question="when are Boss and Lex next working together",
+        now_value=now_value,
+    )
+
+    assert self_overlap == {
+        "answer": "You and Lex next overlap on 2026-03-23 from 12:00 to 18:00.",
+        "date": "2026-03-23",
+        "matched_intent": "next_overlap_with_person",
+    }
+    assert two_people == {
+        "answer": "Lex and Sam next overlap on 2026-03-23 from 12:00 to 16:00.",
+        "date": "2026-03-23",
+        "matched_intent": "next_overlap_between_people",
+    }
+    assert alias_people["matched_intent"] == "next_overlap_between_people"
+
+
+def test_new_intent_unresolved_person_and_no_future_fallbacks(tmp_path):
+    _client, _today, _tomorrow = _build_client(tmp_path)
+    now_value = datetime(2026, 3, 22, 23, 30, 0)
+
+    unresolved = app_module.build_ask_response(
+        question="when do i next overlap with NotARealName",
+        person="Nathan",
+        now_value=now_value,
+    )
+    no_future_shift = app_module.build_ask_response(
+        question="when am i next working",
+        person="PastOnly",
+        now_value=now_value,
+    )
+    no_future_overlap = app_module.build_ask_response(
+        question="when are PastOnly and Debbie next working together",
+        now_value=now_value,
+    )
+
+    assert unresolved == {
+        "answer": "I could not resolve the other person for that overlap check.",
+        "date": "2026-03-22",
+        "matched_intent": "next_overlap_with_person",
+    }
+    assert no_future_shift == {
+        "answer": "I could not find a future shift for you.",
+        "date": "2026-03-22",
+        "matched_intent": "next_shift_for_person",
+    }
+    assert no_future_overlap == {
+        "answer": "I could not find a future overlap for PastOnly and Debbie.",
+        "date": "2026-03-22",
+        "matched_intent": "next_overlap_between_people",
     }

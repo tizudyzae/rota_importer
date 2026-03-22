@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
+from zoneinfo import ZoneInfo
+import os
 import re
 import sqlite3
 
@@ -41,8 +43,26 @@ def hhmm_to_minutes(value: str) -> Optional[int]:
     return total
 
 
+def _resolve_local_now(now_value: Optional[datetime] = None) -> datetime:
+    if now_value is not None:
+        return now_value
+
+    tz_name = clean_cell(
+        os.environ.get("TZ", "")
+        or os.environ.get("HA_TIME_ZONE", "")
+        or os.environ.get("HASS_TIME_ZONE", "")
+    )
+    if tz_name:
+        try:
+            return datetime.now(ZoneInfo(tz_name))
+        except Exception:
+            pass
+
+    return datetime.now().astimezone()
+
+
 def resolve_question_date(question: str, now_value: Optional[datetime] = None) -> tuple[str, str]:
-    now_local = now_value or datetime.now()
+    now_local = _resolve_local_now(now_value=now_value)
     question_clean = clean_cell(question).lower()
 
     if "tomorrow" in question_clean:
@@ -87,6 +107,26 @@ def _get_latest_upload_id(db_path: Path) -> Optional[int]:
             ORDER BY uploaded_at DESC, id DESC
             LIMIT 1
             """
+        ).fetchone()
+    return row["id"] if row else None
+
+
+def _get_latest_upload_id_for_date(db_path: Path, shift_date: str) -> Optional[int]:
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT u.id
+            FROM uploads u
+            WHERE EXISTS (
+                SELECT 1
+                FROM shifts s
+                WHERE s.upload_id = u.id
+                  AND s.shift_date = ?
+            )
+            ORDER BY u.uploaded_at DESC, u.id DESC
+            LIMIT 1
+            """,
+            (shift_date,),
         ).fetchone()
     return row["id"] if row else None
 
@@ -182,7 +222,7 @@ def build_ask_response(db_path: str | Path, question: str, person: Optional[str]
             "matched_intent": matched_intent,
         }
 
-    upload_id = _get_latest_upload_id(db_file)
+    upload_id = _get_latest_upload_id_for_date(db_file, resolved_date) or _get_latest_upload_id(db_file)
     if not upload_id:
         return {
             "answer": f"I could not find rota data for {day_word}.",

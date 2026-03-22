@@ -174,8 +174,14 @@ The parser now supports broad natural-language phrasings, including:
 - am I working / am I in / am I off
 - who am I working with / who is <person> working with / overlap
 - who is on at 3pm (time-specific checks)
+- when am I next working / when is my next shift / when do I work next
+- who is working this morning / tomorrow morning / monday morning
+- who is working this evening / tomorrow evening / tonight
+- when am I next working with Alex / when do Alex and I next overlap
+- when are Alex and Sam next working together / share a shift / overlap
 - daily summary / weekly summary
 - dates via today, tomorrow, tonight, weekday names, this weekend, next week
+- filler phrasing such as `can you tell me`, `do you know`, `actually`, `then`, and `please`
 
 ### Alias and fuzzy person matching
 
@@ -188,6 +194,23 @@ Matching order is deterministic:
 3. fuzzy match
 
 Aliases work for direct person queries and coworker/overlap queries.
+Quoted names are also supported in overlap queries, for example: `when is "Alex" and "Sam" next working together`.
+
+### Morning and evening default windows
+
+Coverage windows are deterministic and local:
+
+- morning: `05:00` to `11:59`
+- evening: `17:00` to `23:59`
+
+Window overlap uses inclusive start and exclusive end behaviour against each shift.
+`tonight` is treated as today evening.
+
+### Next-shift and overlap logic
+
+- `next shift` queries look for the next future shift start for the resolved person.
+- `next overlap` queries resolve people using alias-aware deterministic matching and return the earliest future overlap start.
+- If people cannot be resolved confidently, ask returns a short fallback instead of guessing.
 
 ### Opening/closing management priority
 
@@ -222,6 +245,18 @@ Management detection reuses existing add-on logic (name-based management metadat
 { "question": "weekly rota summary next week" }
 ```
 
+```json
+{ "question": "when am i next on shift", "person": "Nathan" }
+```
+
+```json
+{ "question": "who is working tomorrow morning?" }
+```
+
+```json
+{ "question": "when are \"Alex\" and \"Sam\" next working together?" }
+```
+
 Ambiguous/unsupported questions return a short fallback answer prompting for day or person context.
 
 ### Response JSON shape
@@ -235,6 +270,17 @@ Ambiguous/unsupported questions return a short fallback answer prompting for day
 ```
 
 ### cURL examples
+
+Add-on endpoint:
+
+```bash
+curl -s -X POST "http://YOUR_ADDON_HOST:8099/api/ask" \
+  -H "Authorization: Bearer <HOME_ASSISTANT_LONG_LIVED_TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"question":"when am i next on shift?","person":"Nathan"}'
+```
+
+HA bridge endpoint:
 
 ```bash
 curl -s -X POST "https://YOUR_HOME_ASSISTANT_URL/api/rota_importer/ask" \

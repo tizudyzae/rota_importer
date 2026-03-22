@@ -8,6 +8,7 @@ from difflib import SequenceMatcher
 from pathlib import Path
 from typing import Optional
 from zoneinfo import ZoneInfo
+import json
 import os
 import re
 import sqlite3
@@ -28,33 +29,31 @@ WEEKDAY_INDEX = {
     "sunday": 6,
     "sun": 6,
 }
-FILLER_WORDS = {
+WEEKDAY_LABELS = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
+LEGACY_MANAGEMENT_NAMES = {"samantha", "elizabeth", "joshua", "laura", "nathan"}
+FILLER_PHRASES = [
+    "can you tell me",
+    "do you know",
+    "let me know",
+    "for me",
     "please",
-    "could",
-    "can",
-    "you",
-    "me",
-    "tell",
-    "know",
     "actually",
     "then",
-    "what",
-    "the",
-    "a",
-    "an",
-    "rota",
-    "schedule",
-    "for",
-    "is",
-    "are",
-    "do",
-    "does",
-    "on",
-}
-LEGACY_MANAGEMENT_NAMES = {"samantha", "elizabeth", "joshua", "laura", "nathan"}
+]
+QUESTION_PREFIXES = ["what is", "what's", "whats", "give me", "tell me"]
 MORNING_WINDOW = ("05:00", "11:59")
 EVENING_WINDOW = ("17:00", "23:59")
-NEXT_WORDS = ("next", "next time", "next shift", "next working day")
+SELF_WORDS = {"i", "me", "my", "i am", "i'm", "am i"}
+
+
+@dataclass
+class DateSelection:
+    start_date: date
+    end_date: date
+    day_word: str
+    relative_date: Optional[str]
+    summary_scope: str
+    explicit: bool
 
 
 @dataclass
@@ -62,17 +61,18 @@ class StructuredQuery:
     intent: str
     person: Optional[str]
     target_people: list[str]
-    role_filter: Optional[str]
+    date: str
     date_range: tuple[str, str]
-    specific_time: Optional[str]
-    future_only: bool
-    target_time_window: Optional[str]
+    weekday: Optional[str]
     relative_date: Optional[str]
+    time_window: Optional[str]
+    specific_time: Optional[str]
     shift_phase: Optional[str]
     overlap_target: Optional[str]
     summary_scope: Optional[str]
+    future_only: bool
     matched_intent: str
-    day_word: str
+    ambiguous_reason: Optional[str] = None
 
 
 def clean_cell(value) -> str:
@@ -97,10 +97,10 @@ def join_human_names(names: list[str]) -> str:
 
 
 def hhmm_to_minutes(value: str) -> Optional[int]:
-    clean_value = clean_cell(value)
-    if not re.fullmatch(r"\d{2}:\d{2}", clean_value):
+    text = clean_cell(value)
+    if not re.fullmatch(r"\d{2}:\d{2}", text):
         return None
-    hours, minutes = clean_value.split(":")
+    hours, minutes = text.split(":")
     total = int(hours) * 60 + int(minutes)
     if total < 0 or total > 1440:
         return None
@@ -111,11 +111,7 @@ def _resolve_local_now(now_value: Optional[datetime] = None) -> datetime:
     if now_value is not None:
         return now_value
 
-    tz_name = clean_cell(
-        os.environ.get("TZ", "")
-        or os.environ.get("HA_TIME_ZONE", "")
-        or os.environ.get("HASS_TIME_ZONE", "")
-    )
+    tz_name = clean_cell(os.environ.get("TZ", "") or os.environ.get("HA_TIME_ZONE", "") or os.environ.get("HASS_TIME_ZONE", ""))
     if tz_name:
         try:
             return datetime.now(ZoneInfo(tz_name))
@@ -125,81 +121,129 @@ def _resolve_local_now(now_value: Optional[datetime] = None) -> datetime:
     return datetime.now().astimezone()
 
 
-def _normalize_question(question: str) -> str:
-    lowered = clean_cell(question).lower()
-    lowered = re.sub(r"[^a-z0-9:\s]", " ", lowered)
-    return re.sub(r"\s+", " ", lowered).strip()
+def _normalize_input(question: str) -> str:
+    text = clean_cell(question).lower()
+    text = text.replace("who's", "who is")
+    text = text.replace("i'm", "i am")
+    text = text.replace("today’s", "today")
+    text = text.replace("tonight", "this evening")
+    text = text.replace("first in", "opening")
+    text = text.replace("last out", "closing")
+    text = text.replace("opens", "opening")
+    text = text.replace("closes", "closing")
+    text = text.replace("on shift", "working")
+    text = text.replace("share a shift", "working together")
+    text = re.sub(r"[^a-z0-9:\s']", " ", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    for filler in FILLER_PHRASES:
+        text = re.sub(rf"\b{re.escape(filler)}\b", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
 
 
-def _remove_filler_words(question_normalized: str) -> str:
-    tokens = [token for token in question_normalized.split() if token not in FILLER_WORDS]
-    return " ".join(tokens)
+def _parse_specific_time(text: str) -> Optional[str]:
+    m = re.search(r"\b(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b", text)
+    if not m:
+        return None
+    hh = int(m.group(1))
+    mm = int(m.group(2) or "00")
+    ampm = (m.group(3) or "").lower()
+    if ampm:
+        if hh == 12:
+            hh = 0
+        if ampm == "pm":
+            hh += 12
+    if hh > 23 or mm > 59:
+        return None
+    return f"{hh:02d}:{mm:02d}"
+
+
+def _extract_date_selection(text: str, now_local: datetime) -> DateSelection:
+    today = now_local.date()
+    tomorrow = today + timedelta(days=1)
+
+    if "next week" in text:
+        days_until_next_monday = (7 - today.weekday()) % 7
+        if days_until_next_monday == 0:
+            days_until_next_monday = 7
+        start = today + timedelta(days=days_until_next_monday)
+        return DateSelection(start, start + timedelta(days=6), "next week", "next week", "week", True)
+
+    if "this week" in text:
+        start = today - timedelta(days=today.weekday())
+        return DateSelection(start, start + timedelta(days=6), "this week", "this week", "week", True)
+
+    if "this weekend" in text:
+        days_until_sat = (5 - today.weekday()) % 7
+        sat = today + timedelta(days=days_until_sat)
+        return DateSelection(sat, sat + timedelta(days=1), "this weekend", "this weekend", "weekend", True)
+
+    if "tomorrow" in text:
+        return DateSelection(tomorrow, tomorrow, "tomorrow", "tomorrow", "day", True)
+
+    if "today" in text or "this morning" in text or "this evening" in text:
+        return DateSelection(today, today, "today", "today", "day", True)
+
+    wd_match = re.search(r"\b(next\s+)?(monday|mon|tuesday|tue|wednesday|wed|thursday|thu|friday|fri|saturday|sat|sunday|sun)\b", text)
+    if wd_match:
+        is_next = wd_match.group(1) is not None
+        token = wd_match.group(2)
+        target = WEEKDAY_INDEX[token]
+        delta = (target - today.weekday()) % 7
+        if is_next:
+            delta = delta + 7 if delta != 0 else 7
+        target_date = today + timedelta(days=delta)
+        label = f"next {token}" if is_next else token
+        return DateSelection(target_date, target_date, label, token, "day", True)
+
+    return DateSelection(today, today, "today", "today", "day", False)
+
+
+def resolve_question_date(question: str, now_value: Optional[datetime] = None) -> tuple[str, str]:
+    now_local = _resolve_local_now(now_value=now_value)
+    text = _normalize_input(question)
+    date_selection = _extract_date_selection(text, now_local)
+    return date_selection.start_date.isoformat(), date_selection.day_word
 
 
 def _extract_quoted_people(question: str) -> list[str]:
     return [sanitize_person_key(item) for item in re.findall(r'"([^"]+)"', question) if sanitize_person_key(item)]
 
 
-def _parse_specific_time(question_normalized: str) -> Optional[str]:
-    match = re.search(r"\b(?:at\s+)?(\d{1,2})(?::(\d{2}))?\s*(am|pm)?\b", question_normalized)
-    if not match:
-        return None
-    hours = int(match.group(1))
-    minutes = int(match.group(2) or "00")
-    meridian = (match.group(3) or "").lower()
-    if meridian:
-        if hours == 12:
-            hours = 0
-        if meridian == "pm":
-            hours += 12
-    if hours > 23 or minutes > 59:
-        return None
-    return f"{hours:02d}:{minutes:02d}"
+def _extract_overlap_people(raw_question: str, normalized: str) -> tuple[Optional[str], list[str]]:
+    quoted = _extract_quoted_people(raw_question)
+    if len(quoted) >= 2:
+        return None, quoted[:2]
+    if len(quoted) == 1:
+        return quoted[0], []
+
+    two = re.search(
+        r"\b(?:when\s+(?:are|do)\s+)?([a-z][a-z\s']+?)\s+and\s+([a-z][a-z\s']+?)\s+next\s+(?:working|work)\s+together\b",
+        normalized,
+    )
+    if two:
+        return None, [sanitize_person_key(two.group(1)), sanitize_person_key(two.group(2))]
+
+    nww = re.search(r"\bwho\s+is\s+([a-z][a-z\s']+?)\s+working\s+with(?:\s+(?:today|tomorrow|on\s+\w+|this\s+\w+))?\b", normalized)
+    if nww:
+        return sanitize_person_key(nww.group(1)), []
+
+    with_match = re.search(r"\bwith\s+([a-z][a-z\s']+?)(?:\s+(?:today|tomorrow|this morning|this evening|morning|evening|on\s+\w+))?$", normalized)
+    if with_match:
+        return sanitize_person_key(with_match.group(1)), []
+
+    return None, []
 
 
-def _extract_date_range(question_normalized: str, now_local: datetime) -> tuple[date, date, str, Optional[str]]:
-    today = now_local.date()
-    tomorrow = today + timedelta(days=1)
-
-    if "next week" in question_normalized:
-        days_until_next_monday = (7 - today.weekday()) % 7
-        if days_until_next_monday == 0:
-            days_until_next_monday = 7
-        start = today + timedelta(days=days_until_next_monday)
-        end = start + timedelta(days=6)
-        return start, end, "next week", "week"
-
-    if "this weekend" in question_normalized:
-        days_until_saturday = (5 - today.weekday()) % 7
-        saturday = today + timedelta(days=days_until_saturday)
-        return saturday, saturday + timedelta(days=1), "this weekend", "weekend"
-
-    if "tomorrow" in question_normalized:
-        return tomorrow, tomorrow, "tomorrow", "day"
-
-    if "tonight" in question_normalized:
-        return today, today, "tonight", "day"
-
-    for token in question_normalized.split():
-        if token in WEEKDAY_INDEX:
-            target = WEEKDAY_INDEX[token]
-            delta = (target - today.weekday()) % 7
-            target_date = today + timedelta(days=delta)
-            return target_date, target_date, token, "day"
-
-    return today, today, "today", "day"
-
-
-def resolve_question_date(question: str, now_value: Optional[datetime] = None) -> tuple[str, str]:
-    now_local = _resolve_local_now(now_value=now_value)
-    question_normalized = _normalize_question(question)
-    start, _end, day_word, _scope = _extract_date_range(question_normalized, now_local)
-    return start.isoformat(), day_word
-
-
-def parse_ask_intent(question: str) -> str:
-    query = normalize_to_structured_query(question=question, person=None)
-    return query.matched_intent
+def _extract_named_person_for_shift_time(normalized: str) -> Optional[str]:
+    patterns = [
+        r"\b(?:what time|when)\s+is\s+([a-z][a-z\s']+?)\s+(?:working|in|on)\b",
+        r"\b(?:what time|when)\s+does\s+([a-z][a-z\s']+?)\s+(?:work|start|finish)\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, normalized)
+        if match:
+            return sanitize_person_key(match.group(1))
+    return None
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
@@ -210,14 +254,7 @@ def _connect(db_path: Path) -> sqlite3.Connection:
 
 def _get_latest_upload_id(db_path: Path) -> Optional[int]:
     with _connect(db_path) as conn:
-        row = conn.execute(
-            """
-            SELECT id
-            FROM uploads
-            ORDER BY uploaded_at DESC, id DESC
-            LIMIT 1
-            """
-        ).fetchone()
+        row = conn.execute("SELECT id FROM uploads ORDER BY uploaded_at DESC, id DESC LIMIT 1").fetchone()
     return row["id"] if row else None
 
 
@@ -245,7 +282,7 @@ def _get_shifts_in_range(db_path: Path, upload_id: int, start_date: str, end_dat
     with _connect(db_path) as conn:
         return conn.execute(
             """
-            SELECT employee, shift_date, start_time, end_time
+            SELECT employee, shift_date, start_time, end_time, row_index, id
             FROM shifts
             WHERE upload_id = ?
               AND shift_date >= ?
@@ -260,7 +297,7 @@ def _get_shifts_from_date(db_path: Path, upload_id: int, start_date: str) -> lis
     with _connect(db_path) as conn:
         return conn.execute(
             """
-            SELECT employee, shift_date, start_time, end_time
+            SELECT employee, shift_date, start_time, end_time, row_index, id
             FROM shifts
             WHERE upload_id = ?
               AND shift_date >= ?
@@ -270,43 +307,14 @@ def _get_shifts_from_date(db_path: Path, upload_id: int, start_date: str) -> lis
         ).fetchall()
 
 
-def _extract_valid_shift_people(day_rows: list[sqlite3.Row]) -> list[str]:
-    people: list[str] = []
-    for row in day_rows:
-        name = clean_cell(row["employee"])
-        start_minutes = hhmm_to_minutes(clean_cell(row["start_time"]))
-        end_minutes = hhmm_to_minutes(clean_cell(row["end_time"]))
-        if not name or start_minutes is None or end_minutes is None or name in people:
-            continue
-        people.append(name)
-    return people
-
-
-def _is_management_person(name: str, management_terms: set[str]) -> bool:
-    normalized = clean_cell(name).lower()
-    return any(term in normalized for term in management_terms)
-
-
-def _get_management_terms() -> set[str]:
-    raw = clean_cell(os.environ.get("ASK_MANAGEMENT_NAMES", ""))
-    if not raw:
-        return set(LEGACY_MANAGEMENT_NAMES)
-    configured = {clean_cell(item).lower() for item in raw.split(",") if clean_cell(item)}
-    return configured or set(LEGACY_MANAGEMENT_NAMES)
-
-
 def _resolve_alias_map(db_path: Path) -> dict[str, str]:
     if not db_path.exists():
         return {}
     with _connect(db_path) as conn:
-        row = conn.execute(
-            "SELECT alias_preferences FROM app_preferences WHERE singleton_key = 'global'"
-        ).fetchone()
+        row = conn.execute("SELECT alias_preferences FROM app_preferences WHERE singleton_key = 'global'").fetchone()
     if not row:
         return {}
     try:
-        import json
-
         payload = json.loads(row["alias_preferences"] or "{}")
     except Exception:
         return {}
@@ -321,17 +329,22 @@ def _resolve_alias_map(db_path: Path) -> dict[str, str]:
     return resolved
 
 
-def _resolve_person_lookup(day_rows: list[sqlite3.Row], aliases: dict[str, str]) -> dict[str, str]:
-    lookup: dict[str, str] = {}
-    for row in day_rows:
+def _resolve_person_lookup(rows: list[sqlite3.Row], aliases: dict[str, str]) -> tuple[dict[str, str], dict[str, str], list[str]]:
+    alias_to_canonical: dict[str, str] = {}
+    canonical_lookup: dict[str, str] = {}
+    names: list[str] = []
+    for row in rows:
         name = sanitize_person_key(row["employee"])
         if not name:
             continue
-        lookup[name.lower()] = name
+        key = name.lower()
+        canonical_lookup[key] = name
+        if name not in names:
+            names.append(name)
         alias = aliases.get(name)
         if alias:
-            lookup[alias.lower()] = name
-    return lookup
+            alias_to_canonical[alias.lower()] = name
+    return alias_to_canonical, canonical_lookup, names
 
 
 def _best_fuzzy_match(candidate: str, choices: list[str]) -> Optional[str]:
@@ -348,274 +361,128 @@ def _best_fuzzy_match(candidate: str, choices: list[str]) -> Optional[str]:
     return best_name if best_score >= 0.72 else None
 
 
-def _resolve_person_name(
-    raw_name: str,
-    day_rows: list[sqlite3.Row],
-    aliases: dict[str, str],
-) -> Optional[str]:
+def _resolve_person_name(raw_name: str, rows: list[sqlite3.Row], aliases: dict[str, str]) -> Optional[str]:
     person_clean = sanitize_person_key(raw_name)
     if not person_clean:
         return None
+    alias_lookup, canonical_lookup, names = _resolve_person_lookup(rows, aliases)
 
-    lookup = _resolve_person_lookup(day_rows, aliases)
-    exact_alias = lookup.get(person_clean.lower())
+    exact_alias = alias_lookup.get(person_clean.lower())
     if exact_alias:
         return exact_alias
 
-    names = sorted({sanitize_person_key(row["employee"]) for row in day_rows if sanitize_person_key(row["employee"])})
-    exact_real = next((name for name in names if name.lower() == person_clean.lower()), None)
-    if exact_real:
-        return exact_real
+    exact_canonical = canonical_lookup.get(person_clean.lower())
+    if exact_canonical:
+        return exact_canonical
 
     return _best_fuzzy_match(person_clean, names)
-
-
-def _extract_overlap_target(question_normalized: str) -> Optional[str]:
-    match = re.search(r"\bwith\s+([a-z][a-z\s']+)$", question_normalized)
-    if match:
-        return sanitize_person_key(match.group(1))
-    match = re.search(r"\bwho\s+is\s+([a-z][a-z\s']+)\s+working\s+with\b", question_normalized)
-    if match:
-        return sanitize_person_key(match.group(1))
-    return None
-
-
-def _extract_overlap_people(question: str, question_normalized: str) -> tuple[Optional[str], list[str]]:
-    quoted = _extract_quoted_people(question)
-    if len(quoted) >= 2:
-        return None, [quoted[0], quoted[1]]
-    if len(quoted) == 1:
-        return quoted[0], []
-
-    pair_patterns = [
-        r"\bwhen\s+(?:are|do)\s+([a-z][a-z\s']+?)\s+and\s+([a-z][a-z\s']+?)\s+next\s+(?:work|working|in|on|overlap|share)\b",
-        r"\bwhen\s+is\s+([a-z][a-z\s']+?)\s+and\s+([a-z][a-z\s']+?)\s+next\s+(?:working|in|on|overlap)\b",
-    ]
-    for pattern in pair_patterns:
-        match = re.search(pattern, question_normalized)
-        if match:
-            return None, [sanitize_person_key(match.group(1)), sanitize_person_key(match.group(2))]
-
-    i_patterns = [
-        r"\bwith\s+([a-z][a-z\s']+)$",
-        r"\balongside\s+([a-z][a-z\s']+)$",
-        r"\boverlap\s+with\s+([a-z][a-z\s']+)$",
-        r"\b([a-z][a-z\s']+?)\s+and\s+i\s+next\s+(?:work|working|in|on|overlap)\b",
-    ]
-    for pattern in i_patterns:
-        match = re.search(pattern, question_normalized)
-        if match:
-            return sanitize_person_key(match.group(1)), []
-
-    return _extract_overlap_target(question_normalized), []
-
-
-def _in_time_window(start_time: str, end_time: str, window_start: str, window_end: str) -> bool:
-    shift_start = hhmm_to_minutes(start_time)
-    shift_end = hhmm_to_minutes(end_time)
-    start_window = hhmm_to_minutes(window_start)
-    end_window = hhmm_to_minutes(window_end)
-    if shift_start is None or shift_end is None or start_window is None or end_window is None:
-        return False
-    return shift_start <= end_window and shift_end > start_window
-
-
-def normalize_to_structured_query(question: str, person: Optional[str], now_value: Optional[datetime] = None) -> StructuredQuery:
-    now_local = _resolve_local_now(now_value=now_value)
-    question_normalized = _normalize_question(question)
-    question_reduced = _remove_filler_words(question_normalized)
-
-    start_date, end_date, day_word, detected_scope = _extract_date_range(question_normalized, now_local)
-    specific_time = _parse_specific_time(question_normalized)
-    future_only = any(word in question_normalized for word in NEXT_WORDS)
-    target_time_window: Optional[str] = None
-    relative_date: Optional[str] = day_word
-
-    intent = "unknown"
-    matched_intent = "unknown"
-    shift_phase: Optional[str] = None
-    summary_scope: Optional[str] = None
-    overlap_target: Optional[str] = None
-    target_people: list[str] = []
-
-    if any(token in question_normalized for token in ["summary", "summarise", "summarize"]):
-        intent = "rota_summary"
-        summary_scope = "week" if "week" in question_normalized else "day"
-        matched_intent = "weekly_rota_summary" if summary_scope == "week" else "daily_rota_summary"
-    elif re.search(r"\bwhen\b.*\bam i\b.*\bnext\b.*\b(working|work|in|on shift|on)\b", question_normalized) or re.search(
-        r"\bwhat\b.*\bmy next shift\b", question_normalized
-    ):
-        intent = "next_shift_for_person"
-        matched_intent = "next_shift_for_person"
-        future_only = True
-    elif "morning" in question_normalized and (
-        "who is" in question_normalized
-        or "who s" in question_normalized
-        or "who" in question_reduced
-    ):
-        intent = "who_is_working_morning"
-        matched_intent = "who_is_working_morning"
-        target_time_window = "morning"
-        if day_word == "today":
-            relative_date = "this morning" if "this morning" in question_normalized else "today morning"
-        elif day_word == "tomorrow":
-            relative_date = "tomorrow morning"
-        else:
-            relative_date = f"{day_word} morning"
-    elif ("evening" in question_normalized or "tonight" in question_normalized) and (
-        "who is" in question_normalized
-        or "who s" in question_normalized
-        or "who" in question_reduced
-    ):
-        intent = "who_is_working_evening"
-        matched_intent = "who_is_working_evening"
-        target_time_window = "evening"
-        if "tonight" in question_normalized:
-            relative_date = "tonight"
-        elif day_word == "today":
-            relative_date = "this evening" if "this evening" in question_normalized else "today evening"
-        elif day_word == "tomorrow":
-            relative_date = "tomorrow evening"
-        else:
-            relative_date = f"{day_word} evening"
-    elif (
-        " next " in f" {question_normalized} "
-        and any(token in question_normalized for token in ["together", "with", "alongside", "share a shift", "overlap"])
-        and (
-            "am i" in question_normalized
-            or "do i" in question_normalized
-            or re.search(r"\bwhen\b.*\bi\b", question_normalized) is not None
-            or " and i " in f" {question_normalized} "
-        )
-    ):
-        intent = "next_overlap_with_person"
-        matched_intent = "next_overlap_with_person"
-        future_only = True
-        overlap_target, extracted_pair = _extract_overlap_people(question, question_normalized)
-        if extracted_pair:
-            target_people = extracted_pair
-    elif (
-        " next " in f" {question_normalized} "
-        and any(token in question_normalized for token in ["together", "overlap", "share a shift", "working together", "on together"])
-        and " and " in question_normalized
-    ):
-        intent = "next_overlap_between_people"
-        matched_intent = "next_overlap_between_people"
-        future_only = True
-        overlap_target, target_people = _extract_overlap_people(question, question_normalized)
-    elif "opening" in question_normalized or "first in" in question_normalized or re.search(r"\bopens?\b", question_normalized):
-        intent = "opening"
-        shift_phase = "management_led_opening"
-        matched_intent = "opening_shift"
-    elif "closing" in question_normalized or "last out" in question_normalized or re.search(r"\bcloses?\b", question_normalized):
-        intent = "closing"
-        shift_phase = "management_led_closing"
-        matched_intent = "closing_shift"
-    elif "working with" in question_normalized or "overlap" in question_normalized:
-        intent = "overlap"
-        matched_intent = "who_am_i_working_with_today"
-        overlap_target = _extract_overlap_target(question_normalized)
-    elif re.search(r"\bam i\b.*\b(working|in|off)\b", question_normalized):
-        intent = "am_i_working"
-        matched_intent = "am_i_working_today"
-    elif re.search(r"\bwho\b", question_reduced) and (
-        "working" in question_normalized
-        or "on shift" in question_normalized
-        or "who is in" in question_normalized
-        or specific_time is not None
-    ):
-        intent = "who_is_working"
-        matched_intent = "who_is_working_today"
-    elif "who is in" in question_normalized:
-        intent = "who_is_working"
-        matched_intent = "who_is_working_today"
-
-    return StructuredQuery(
-        intent=intent,
-        person=sanitize_person_key(person or "") or None,
-        target_people=target_people,
-        role_filter=None,
-        date_range=(start_date.isoformat(), end_date.isoformat()),
-        specific_time=specific_time,
-        future_only=future_only,
-        target_time_window=target_time_window,
-        relative_date=relative_date,
-        shift_phase=shift_phase,
-        overlap_target=overlap_target,
-        summary_scope=summary_scope or detected_scope,
-        matched_intent=matched_intent,
-        day_word=day_word,
-    )
 
 
 def _display_name(name: str, aliases: dict[str, str]) -> str:
     return aliases.get(name) or name
 
 
-def _pick_opening_or_closing(
-    day_rows: list[sqlite3.Row],
-    phase: str,
-    management_terms: set[str],
-) -> tuple[list[str], Optional[int], bool]:
-    is_open = phase in {"management_led_opening", "earliest_start_overall"}
-    key_fn = (lambda row: hhmm_to_minutes(clean_cell(row["start_time"]))) if is_open else (lambda row: hhmm_to_minutes(clean_cell(row["end_time"])))
-
-    valid_rows: list[tuple[str, int]] = []
+def _extract_valid_shift_people(day_rows: list[sqlite3.Row]) -> list[str]:
+    seen: set[str] = set()
+    people: list[str] = []
     for row in day_rows:
         name = sanitize_person_key(row["employee"])
-        minute_value = key_fn(row)
-        if not name or minute_value is None:
+        start_m = hhmm_to_minutes(clean_cell(row["start_time"]))
+        end_m = hhmm_to_minutes(clean_cell(row["end_time"]))
+        if not name or start_m is None or end_m is None or name in seen:
             continue
-        valid_rows.append((name, minute_value))
-
-    if not valid_rows:
-        return [], None, False
-
-    target_time = min(item[1] for item in valid_rows) if is_open else max(item[1] for item in valid_rows)
-    at_target = [name for name, minute in valid_rows if minute == target_time]
-    at_target_unique = sorted(set(at_target), key=lambda x: x.lower())
-
-    managers = [name for name in at_target_unique if _is_management_person(name, management_terms)]
-    if phase.startswith("management_led") and managers:
-        ordered = managers + [name for name in at_target_unique if name not in managers]
-        return ordered, target_time, True
-
-    return at_target_unique, target_time, False
+        seen.add(name)
+        people.append(name)
+    return people
 
 
-def _people_on_at_time(day_rows: list[sqlite3.Row], minute_mark: int) -> list[str]:
-    names: list[str] = []
+def _in_time_window(start_time: str, end_time: str, window_start: str, window_end: str) -> bool:
+    shift_start = hhmm_to_minutes(start_time)
+    shift_end = hhmm_to_minutes(end_time)
+    win_start = hhmm_to_minutes(window_start)
+    win_end = hhmm_to_minutes(window_end)
+    if shift_start is None or shift_end is None or win_start is None or win_end is None:
+        return False
+    return shift_start <= win_end and shift_end > win_start
+
+
+def _people_in_named_window(day_rows: list[sqlite3.Row], target_window: str) -> list[str]:
+    window = MORNING_WINDOW if target_window == "morning" else EVENING_WINDOW
+    people: list[str] = []
     for row in day_rows:
         name = sanitize_person_key(row["employee"])
-        start_minutes = hhmm_to_minutes(clean_cell(row["start_time"]))
-        end_minutes = hhmm_to_minutes(clean_cell(row["end_time"]))
-        if not name or start_minutes is None or end_minutes is None:
+        if not name:
             continue
-        if start_minutes <= minute_mark < end_minutes and name not in names:
-            names.append(name)
-    return names
+        if _in_time_window(clean_cell(row["start_time"]), clean_cell(row["end_time"]), window[0], window[1]) and name not in people:
+            people.append(name)
+    return people
+
+
+def _is_management_person(name: str, management_terms: set[str]) -> bool:
+    normalized = clean_cell(name).lower()
+    return any(term in normalized for term in management_terms)
+
+
+def _get_management_terms() -> set[str]:
+    raw = clean_cell(os.environ.get("ASK_MANAGEMENT_NAMES", ""))
+    if not raw:
+        return set(LEGACY_MANAGEMENT_NAMES)
+    configured = {clean_cell(item).lower() for item in raw.split(",") if clean_cell(item)}
+    return configured or set(LEGACY_MANAGEMENT_NAMES)
+
+
+def _pick_open_or_close(day_rows: list[sqlite3.Row], intent: str, management_terms: set[str]) -> tuple[list[str], bool]:
+    is_open = intent == "opening"
+    chosen_time: Optional[int] = None
+    candidates: list[tuple[str, int]] = []
+    for row in day_rows:
+        name = sanitize_person_key(row["employee"])
+        mm = hhmm_to_minutes(clean_cell(row["start_time"] if is_open else row["end_time"]))
+        if not name or mm is None:
+            continue
+        candidates.append((name, mm))
+        if chosen_time is None:
+            chosen_time = mm
+        else:
+            chosen_time = min(chosen_time, mm) if is_open else max(chosen_time, mm)
+    if chosen_time is None:
+        return [], False
+
+    tied = sorted({name for name, mm in candidates if mm == chosen_time}, key=str.lower)
+    managers = [name for name in tied if _is_management_person(name, management_terms)]
+    if managers:
+        ordered = managers + [name for name in tied if name not in managers]
+        return ordered, len(managers) > 0 and len(tied) > 1
+    return tied, False
+
+
+def _person_shift_for_day(day_rows: list[sqlite3.Row], person_name: str) -> Optional[tuple[str, str]]:
+    for row in day_rows:
+        name = sanitize_person_key(row["employee"])
+        if name != person_name:
+            continue
+        start = clean_cell(row["start_time"])
+        end = clean_cell(row["end_time"])
+        if hhmm_to_minutes(start) is None or hhmm_to_minutes(end) is None:
+            continue
+        return start, end
+    return None
 
 
 def _get_overlap_people(day_rows: list[sqlite3.Row], person_name: str) -> tuple[bool, list[str]]:
-    roster = {}
+    roster: dict[str, tuple[int, int]] = {}
     for row in day_rows:
         name = sanitize_person_key(row["employee"])
-        start_minutes = hhmm_to_minutes(clean_cell(row["start_time"]))
-        end_minutes = hhmm_to_minutes(clean_cell(row["end_time"]))
-        if not name or start_minutes is None or end_minutes is None:
+        start = hhmm_to_minutes(clean_cell(row["start_time"]))
+        end = hhmm_to_minutes(clean_cell(row["end_time"]))
+        if not name or start is None or end is None:
             continue
-        roster[name] = (start_minutes, end_minutes)
-
+        roster[name] = (start, end)
     if person_name not in roster:
         return False, []
-
-    start_a, end_a = roster[person_name]
+    a_start, a_end = roster[person_name]
     overlaps = sorted(
-        [
-            name
-            for name, (start_b, end_b) in roster.items()
-            if name != person_name and start_a < end_b and end_a > start_b
-        ],
+        [name for name, (b_start, b_end) in roster.items() if name != person_name and a_start < b_end and a_end > b_start],
         key=str.lower,
     )
     return True, overlaps
@@ -634,39 +501,24 @@ def _find_next_shift(rows: list[sqlite3.Row], person_name: str, now_local: datet
     return None
 
 
-def _people_in_named_window(day_rows: list[sqlite3.Row], target_window: str) -> list[str]:
-    if target_window == "morning":
-        window = MORNING_WINDOW
-    else:
-        window = EVENING_WINDOW
-    people: list[str] = []
-    for row in day_rows:
-        name = sanitize_person_key(row["employee"])
-        if not name:
-            continue
-        if _in_time_window(clean_cell(row["start_time"]), clean_cell(row["end_time"]), window[0], window[1]) and name not in people:
-            people.append(name)
-    return people
-
-
 def _find_next_overlap(rows: list[sqlite3.Row], person_a: str, person_b: str, now_local: datetime) -> Optional[tuple[str, str, str]]:
     by_day: dict[str, dict[str, list[tuple[int, int]]]] = {}
     for row in rows:
         shift_date = clean_cell(row["shift_date"])
         name = sanitize_person_key(row["employee"])
-        start_minutes = hhmm_to_minutes(clean_cell(row["start_time"]))
-        end_minutes = hhmm_to_minutes(clean_cell(row["end_time"]))
-        if not shift_date or not name or start_minutes is None or end_minutes is None:
+        start = hhmm_to_minutes(clean_cell(row["start_time"]))
+        end = hhmm_to_minutes(clean_cell(row["end_time"]))
+        if not shift_date or not name or start is None or end is None:
             continue
-        by_day.setdefault(shift_date, {}).setdefault(name, []).append((start_minutes, end_minutes))
+        by_day.setdefault(shift_date, {}).setdefault(name, []).append((start, end))
 
     now_mark = now_local.strftime("%Y-%m-%d %H:%M")
     for day in sorted(by_day.keys()):
         shifts = by_day[day]
         if person_a not in shifts or person_b not in shifts:
             continue
-        best_start: Optional[int] = None
-        best_end: Optional[int] = None
+        best_start = None
+        best_end = None
         for a_start, a_end in shifts[person_a]:
             for b_start, b_end in shifts[person_b]:
                 overlap_start = max(a_start, b_start)
@@ -680,239 +532,355 @@ def _find_next_overlap(rows: list[sqlite3.Row], person_a: str, person_b: str, no
                     best_start = overlap_start
                     best_end = overlap_end
         if best_start is not None and best_end is not None:
-            return (
-                day,
-                f"{best_start // 60:02d}:{best_start % 60:02d}",
-                f"{best_end // 60:02d}:{best_end % 60:02d}",
-            )
+            return day, f"{best_start // 60:02d}:{best_start % 60:02d}", f"{best_end // 60:02d}:{best_end % 60:02d}"
     return None
 
 
-def _summarize_period(rows: list[sqlite3.Row], aliases: dict[str, str]) -> str:
-    by_day: dict[str, list[str]] = {}
+def _summarize_period(rows: list[sqlite3.Row], aliases: dict[str, str], include_times: bool = False) -> str:
+    by_day: dict[str, list[tuple[str, str, str]]] = {}
     for row in rows:
         shift_date = clean_cell(row["shift_date"])
-        if not shift_date:
-            continue
         name = sanitize_person_key(row["employee"])
-        if not name:
+        start = clean_cell(row["start_time"])
+        end = clean_cell(row["end_time"])
+        if not shift_date or not name:
             continue
         by_day.setdefault(shift_date, [])
-        if name not in by_day[shift_date]:
-            by_day[shift_date].append(name)
+        by_day[shift_date].append((name, start, end))
 
     if not by_day:
         return "No shifts found."
 
-    if len(by_day) == 1:
-        day, names = next(iter(by_day.items()))
-        return f"{day}: {join_human_names([_display_name(name, aliases) for name in names])}."
+    if include_times:
+        parts = []
+        for day in sorted(by_day.keys()):
+            spans = [f"{_display_name(name, aliases)} {start}-{end}" for name, start, end in by_day[day] if hhmm_to_minutes(start) is not None]
+            if spans:
+                parts.append(f"{day}: {', '.join(spans)}")
+        return "; ".join(parts) + "."
 
     parts = []
     for day in sorted(by_day.keys()):
-        names = by_day[day]
-        parts.append(f"{day}: {len(names)} on")
+        people = []
+        seen = set()
+        for name, _start, _end in by_day[day]:
+            if name not in seen:
+                seen.add(name)
+                people.append(_display_name(name, aliases))
+        parts.append(f"{day}: {join_human_names(people)}")
     return "; ".join(parts) + "."
 
 
+def _weekday_label_from_date(day: str) -> str:
+    dt = datetime.strptime(day, "%Y-%m-%d").date()
+    return WEEKDAY_LABELS[dt.weekday()]
+
+
+def normalize_to_structured_query(question: str, person: Optional[str], now_value: Optional[datetime] = None) -> StructuredQuery:
+    now_local = _resolve_local_now(now_value=now_value)
+    normalized = _normalize_input(question)
+    date_selection = _extract_date_selection(normalized, now_local)
+    specific_time = _parse_specific_time(normalized)
+
+    window: Optional[str] = None
+    if "morning" in normalized:
+        window = "morning"
+    elif "evening" in normalized:
+        window = "evening"
+
+    future_only = "next" in normalized and any(token in normalized for token in ["work", "shift", "overlap", "together", "with"])
+
+    intent = "unknown"
+    matched = "unknown"
+    overlap_target: Optional[str] = None
+    target_people: list[str] = []
+    shift_phase: Optional[str] = None
+    ambiguous_reason: Optional[str] = None
+
+    has_self = any(phrase in normalized for phrase in ["am i", "i am", "i working", "my rota", "do i"])
+    asks_who = normalized.startswith("who") or " who " in f" {normalized} "
+
+    if "next" in normalized and any(token in normalized for token in ["working together", "next overlap", "next working with", "next work with"]):
+        overlap_target, target_people = _extract_overlap_people(question, normalized)
+        if len(target_people) == 2:
+            intent = "next_overlap_between_people"
+            matched = "next_overlap_between_people"
+        else:
+            intent = "next_overlap_with_person"
+            matched = "next_overlap_with_person"
+    elif re.search(r"\bwhen\s+(?:am|do)\s+i\s+next\s+(?:working|work)\b", normalized) or "my next shift" in normalized or "next shift" in normalized:
+        intent = "next_shift_for_person"
+        matched = "next_shift_for_person"
+    elif "my rota" in normalized or ("my shifts" in normalized):
+        intent = "my_rota_summary"
+        matched = "my_rota_summary"
+    elif any(prefix in normalized for prefix in QUESTION_PREFIXES) and "rota" in normalized:
+        intent = "rota_summary"
+        matched = "rota_summary"
+    elif "opening" in normalized:
+        intent = "opening"
+        matched = "opening_shift"
+        shift_phase = "management_led_opening"
+    elif "closing" in normalized:
+        intent = "closing"
+        matched = "closing_shift"
+        shift_phase = "management_led_closing"
+    elif _extract_named_person_for_shift_time(normalized) and any(token in normalized for token in ["what time", "when"]):
+        intent = "person_shift_time"
+        matched = "person_shift_time"
+        overlap_target = _extract_named_person_for_shift_time(normalized)
+    elif ("working with" in normalized or re.search(r"\bwho\s+am\s+i\s+with\b", normalized) or re.search(r"\bwho\s+is\s+[a-z].*\s+working\s+with\b", normalized)):
+        intent = "overlap"
+        matched = "overlap"
+        overlap_target, target_people = _extract_overlap_people(question, normalized)
+    elif has_self and any(token in normalized for token in ["start", "in on", "what time am i in"]):
+        intent = "my_start_time"
+        matched = "my_start_time"
+    elif has_self and any(token in normalized for token in ["finish", "end", "out"]):
+        intent = "my_finish_time"
+        matched = "my_finish_time"
+    elif has_self and "what shift" in normalized:
+        intent = "my_shift_detail"
+        matched = "my_shift_detail"
+    elif has_self and any(token in normalized for token in ["am i off", "i off"]):
+        intent = "am_i_off"
+        matched = "am_i_off"
+    elif has_self and any(token in normalized for token in ["am i working", "am i in", "am i on", "i working"]):
+        intent = "am_i_working"
+        matched = "am_i_working"
+    elif asks_who and any(token in normalized for token in ["working", "in ", "on ", "on at"]):
+        intent = "who_is_working"
+        if window:
+            matched = f"who_is_working_{window}"
+        elif date_selection.summary_scope == "week":
+            matched = "who_is_working_week"
+        else:
+            matched = "who_is_working"
+    elif "rota" in normalized:
+        intent = "rota_summary"
+        matched = "rota_summary"
+
+    if intent in {"my_rota_summary", "next_shift_for_person", "am_i_working", "am_i_off", "my_shift_detail", "my_start_time", "my_finish_time"} and not date_selection.explicit and intent not in {"next_shift_for_person", "my_rota_summary"}:
+        ambiguous_reason = "I need a date for that request."
+
+    return StructuredQuery(
+        intent=intent,
+        person=sanitize_person_key(person or "") or None,
+        target_people=target_people,
+        date=date_selection.start_date.isoformat(),
+        date_range=(date_selection.start_date.isoformat(), date_selection.end_date.isoformat()),
+        weekday=date_selection.relative_date,
+        relative_date=date_selection.relative_date,
+        time_window=window,
+        specific_time=specific_time,
+        shift_phase=shift_phase,
+        overlap_target=overlap_target,
+        summary_scope=date_selection.summary_scope,
+        future_only=future_only,
+        matched_intent=matched,
+        ambiguous_reason=ambiguous_reason,
+    )
+
+
+def parse_ask_intent(question: str) -> str:
+    return normalize_to_structured_query(question=question, person=None).matched_intent
+
+
 def build_ask_response(db_path: str | Path, question: str, person: Optional[str] = None, now_value: Optional[datetime] = None) -> dict:
-    db_file = Path(db_path)
     now_local = _resolve_local_now(now_value=now_value)
     query = normalize_to_structured_query(question=question, person=person, now_value=now_value)
+    db_file = Path(db_path)
 
     default_unknown = {
         "answer": "Sorry, I could not understand that rota question. Try adding a day or person.",
-        "date": query.date_range[0],
+        "date": query.date,
         "matched_intent": "unknown",
     }
 
-    if not db_file.exists():
-        return {
-            "answer": f"I could not find rota data for {query.day_word}.",
-            "date": query.date_range[0],
-            "matched_intent": query.matched_intent,
-        }
-
-    upload_id = _get_latest_upload_id_for_date(db_file, query.date_range[0]) or _get_latest_upload_id(db_file)
-    if not upload_id:
-        return {
-            "answer": f"I could not find rota data for {query.day_word}.",
-            "date": query.date_range[0],
-            "matched_intent": query.matched_intent,
-        }
-
-    aliases = _resolve_alias_map(db_file)
-    management_terms = _get_management_terms()
-    rows = _get_shifts_in_range(db_file, upload_id, query.date_range[0], query.date_range[1])
-    day_rows = [row for row in rows if clean_cell(row["shift_date"]) == query.date_range[0]]
-    all_rows = _get_shifts_from_date(db_file, upload_id, "0001-01-01")
-    future_rows = _get_shifts_from_date(db_file, upload_id, now_local.date().isoformat())
+    if query.ambiguous_reason:
+        return {"answer": query.ambiguous_reason, "date": query.date, "matched_intent": query.matched_intent}
 
     if query.intent == "unknown":
         return default_unknown
 
-    if query.intent == "next_shift_for_person":
-        subject = _resolve_person_name(query.person or "", all_rows, aliases)
-        if not subject:
-            return {
-                "answer": "I could not tell who you are. Add a person or current-user context.",
-                "date": query.date_range[0],
-                "matched_intent": query.matched_intent,
-            }
-        next_shift = _find_next_shift(future_rows, subject, now_local)
-        if not next_shift:
-            return {
-                "answer": "I could not find a future shift for you.",
-                "date": query.date_range[0],
-                "matched_intent": query.matched_intent,
-            }
-        shift_date = clean_cell(next_shift["shift_date"])
-        start_time = clean_cell(next_shift["start_time"])
-        end_time = clean_cell(next_shift["end_time"])
-        if hhmm_to_minutes(end_time) is not None:
-            answer = f"Your next shift is {shift_date} from {start_time} to {end_time}."
-        else:
-            answer = f"Your next shift is {shift_date} at {start_time}."
-        return {"answer": answer, "date": shift_date, "matched_intent": query.matched_intent}
+    if not db_file.exists():
+        return {"answer": f"I could not find rota data for {query.relative_date or 'that day' }.", "date": query.date, "matched_intent": query.matched_intent}
 
-    if query.intent in {"who_is_working_morning", "who_is_working_evening"}:
-        people = _people_in_named_window(day_rows, query.target_time_window or "morning")
-        window_label = query.relative_date or query.day_word
-        if not people:
-            answer = f"No one is scheduled {window_label}."
-        else:
-            display_people = [_display_name(name, aliases) for name in people]
-            answer = f"{join_human_names(display_people)} {'is' if len(display_people)==1 else 'are'} working {window_label}."
-        payload = {"answer": answer, "date": query.date_range[0], "matched_intent": query.matched_intent}
-        payload["window"] = query.target_time_window
-        return payload
+    upload_id = _get_latest_upload_id_for_date(db_file, query.date) or _get_latest_upload_id(db_file)
+    if not upload_id:
+        return {"answer": f"I could not find rota data for {query.relative_date or 'that day'}.", "date": query.date, "matched_intent": query.matched_intent}
 
-    if query.intent in {"next_overlap_with_person", "next_overlap_between_people"}:
-        if query.intent == "next_overlap_between_people":
-            extracted_people = query.target_people
-            if len(extracted_people) != 2:
-                return {
-                    "answer": "Please name the two people for the overlap check.",
-                    "date": query.date_range[0],
-                    "matched_intent": query.matched_intent,
-                }
-            first = _resolve_person_name(extracted_people[0], all_rows, aliases)
-            second = _resolve_person_name(extracted_people[1], all_rows, aliases)
-        else:
-            first = _resolve_person_name(query.person or "", all_rows, aliases)
-            second = _resolve_person_name(query.overlap_target or "", all_rows, aliases)
-            if not first:
-                return {
-                    "answer": "I could not tell who you are. Add a person or current-user context.",
-                    "date": query.date_range[0],
-                    "matched_intent": query.matched_intent,
-                }
-            if not second:
-                return {
-                    "answer": "I could not resolve the other person for that overlap check.",
-                    "date": query.date_range[0],
-                    "matched_intent": query.matched_intent,
-                }
+    aliases = _resolve_alias_map(db_file)
+    management_terms = _get_management_terms()
 
-        if not first or not second:
-            return {
-                "answer": "I could not confidently resolve both people.",
-                "date": query.date_range[0],
-                "matched_intent": query.matched_intent,
-            }
-
-        next_overlap = _find_next_overlap(future_rows, first, second, now_local)
-        if not next_overlap:
-            answer = (
-                "I could not find a future overlap for you and "
-                f"{_display_name(second, aliases)}."
-                if query.intent == "next_overlap_with_person"
-                else f"I could not find a future overlap for {_display_name(first, aliases)} and {_display_name(second, aliases)}."
-            )
-            return {"answer": answer, "date": query.date_range[0], "matched_intent": query.matched_intent}
-
-        overlap_date, overlap_start, overlap_end = next_overlap
-        if query.intent == "next_overlap_with_person":
-            answer = f"You and {_display_name(second, aliases)} next overlap on {overlap_date} from {overlap_start} to {overlap_end}."
-        else:
-            answer = f"{_display_name(first, aliases)} and {_display_name(second, aliases)} next overlap on {overlap_date} from {overlap_start} to {overlap_end}."
-        return {"answer": answer, "date": overlap_date, "matched_intent": query.matched_intent}
+    rows = _get_shifts_in_range(db_file, upload_id, query.date_range[0], query.date_range[1])
+    day_rows = [r for r in rows if clean_cell(r["shift_date"]) == query.date]
+    all_rows = _get_shifts_from_date(db_file, upload_id, "0001-01-01")
+    future_rows = _get_shifts_from_date(db_file, upload_id, now_local.date().isoformat())
+    label = query.relative_date or _weekday_label_from_date(query.date)
 
     if query.intent == "who_is_working":
-        if query.specific_time:
-            minute_mark = hhmm_to_minutes(query.specific_time)
-            people = _people_on_at_time(day_rows, minute_mark) if minute_mark is not None else []
-            time_label = datetime.strptime(query.specific_time, "%H:%M").strftime("%-I:%M%p").lower()
+        if query.summary_scope in {"week", "weekend"}:
+            answer = _summarize_period(rows, aliases)
+            return {"answer": answer, "date": query.date, "matched_intent": query.matched_intent}
+
+        if query.time_window:
+            people = _people_in_named_window(day_rows, query.time_window)
             if not people:
-                answer = f"No one is on at {time_label} {query.day_word}."
-            else:
-                answer = f"{join_human_names([_display_name(name, aliases) for name in people])} {'is' if len(people)==1 else 'are'} on at {time_label} {query.day_word}."
-            return {"answer": answer, "date": query.date_range[0], "matched_intent": query.matched_intent}
+                return {"answer": f"No one is scheduled {label}.", "date": query.date, "matched_intent": query.matched_intent}
+            display = [_display_name(n, aliases) for n in people]
+            return {
+                "answer": f"{join_human_names(display)} {'is' if len(display)==1 else 'are'} working {label}.",
+                "date": query.date,
+                "matched_intent": query.matched_intent,
+            }
+
+        if query.specific_time:
+            mark = hhmm_to_minutes(query.specific_time)
+            names: list[str] = []
+            for row in day_rows:
+                name = sanitize_person_key(row["employee"])
+                start = hhmm_to_minutes(clean_cell(row["start_time"]))
+                end = hhmm_to_minutes(clean_cell(row["end_time"]))
+                if name and start is not None and end is not None and mark is not None and start <= mark < end and name not in names:
+                    names.append(name)
+            if not names:
+                return {"answer": f"No one is on at {query.specific_time} {label}.", "date": query.date, "matched_intent": query.matched_intent}
+            display = [_display_name(n, aliases) for n in names]
+            return {"answer": f"{join_human_names(display)} {'is' if len(display)==1 else 'are'} on at {query.specific_time} {label}.", "date": query.date, "matched_intent": query.matched_intent}
 
         people = _extract_valid_shift_people(day_rows)
         if not people:
-            answer = f"No one is scheduled {query.day_word}."
-        else:
-            display_people = [_display_name(name, aliases) for name in people]
-            answer = f"{join_human_names(display_people)} {'is' if len(display_people)==1 else 'are'} working {query.day_word}."
-        return {"answer": answer, "date": query.date_range[0], "matched_intent": query.matched_intent}
+            return {"answer": f"No one is scheduled {label}.", "date": query.date, "matched_intent": query.matched_intent}
+        display = [_display_name(n, aliases) for n in people]
+        return {"answer": f"{join_human_names(display)} {'is' if len(display)==1 else 'are'} working {label}.", "date": query.date, "matched_intent": query.matched_intent}
 
-    if query.intent == "am_i_working":
+    if query.intent in {"opening", "closing"}:
+        selected, used_management = _pick_open_or_close(day_rows, query.intent, management_terms)
+        if not selected:
+            return {"answer": f"I could not find a {query.intent} shift for {label}.", "date": query.date, "matched_intent": query.matched_intent}
+        display = [_display_name(n, aliases) for n in selected]
+        if used_management and len(display) > 1:
+            lead = display[0]
+            peers = join_human_names(display[1:])
+            if query.intent == "opening":
+                answer = f"{lead} is opening {label}, with {peers} starting at the same time."
+            else:
+                answer = f"{lead} is closing {label}, with {peers} finishing at the same time."
+        else:
+            verb = "is" if len(display) == 1 else "are"
+            answer = f"{join_human_names(display)} {verb} {query.intent} {label}."
+        return {"answer": answer, "date": query.date, "matched_intent": query.matched_intent}
+
+    if query.intent in {"am_i_working", "am_i_off", "my_shift_detail", "my_start_time", "my_finish_time"}:
         subject = _resolve_person_name(query.person or "", day_rows, aliases)
         if not subject:
             raise ValueError("person is required for this question type")
-        people = set(_extract_valid_shift_people(day_rows))
-        if subject in people:
-            answer = f"Yes, {_display_name(subject, aliases)} is working {query.day_word}."
-        else:
-            answer = f"No, {_display_name(subject, aliases)} is off {query.day_word}."
-        return {"answer": answer, "date": query.date_range[0], "matched_intent": query.matched_intent}
+        shift = _person_shift_for_day(day_rows, subject)
+        is_working = shift is not None
+
+        if query.intent == "am_i_working":
+            if is_working:
+                return {"answer": f"You are working on {label} from {shift[0]} to {shift[1]}.", "date": query.date, "matched_intent": query.matched_intent}
+            return {"answer": f"You are not working on {label}.", "date": query.date, "matched_intent": query.matched_intent}
+
+        if query.intent == "am_i_off":
+            if is_working:
+                return {"answer": f"No, you are working on {label} from {shift[0]} to {shift[1]}.", "date": query.date, "matched_intent": query.matched_intent}
+            return {"answer": f"Yes, you are off on {label}.", "date": query.date, "matched_intent": query.matched_intent}
+
+        if not is_working:
+            return {"answer": f"You are not working on {label}.", "date": query.date, "matched_intent": query.matched_intent}
+
+        if query.intent == "my_shift_detail":
+            return {"answer": f"You are on shift on {label} from {shift[0]} to {shift[1]}.", "date": query.date, "matched_intent": query.matched_intent}
+        if query.intent == "my_start_time":
+            return {"answer": f"You start at {shift[0]} on {label}.", "date": query.date, "matched_intent": query.matched_intent}
+        return {"answer": f"You finish at {shift[1]} on {label}.", "date": query.date, "matched_intent": query.matched_intent}
+
+    if query.intent == "person_shift_time":
+        requested_name = query.overlap_target or ""
+        subject = _resolve_person_name(requested_name, all_rows, aliases)
+        if not subject:
+            return {"answer": "I could not resolve that person.", "date": query.date, "matched_intent": query.matched_intent}
+        shift = _person_shift_for_day(day_rows, subject)
+        if not shift:
+            return {
+                "answer": f"{_display_name(subject, aliases)} is not working on {label}.",
+                "date": query.date,
+                "matched_intent": query.matched_intent,
+            }
+        return {
+            "answer": f"{_display_name(subject, aliases)} is working on {label} from {shift[0]} to {shift[1]}.",
+            "date": query.date,
+            "matched_intent": query.matched_intent,
+        }
+
+    if query.intent == "next_shift_for_person":
+        subject = _resolve_person_name(query.person or "", all_rows, aliases)
+        if not subject:
+            return {"answer": "I could not tell who you are. Add a person or current-user context.", "date": query.date, "matched_intent": query.matched_intent}
+        next_shift = _find_next_shift(future_rows, subject, now_local)
+        if not next_shift:
+            return {"answer": "I could not find a future shift for you.", "date": query.date, "matched_intent": query.matched_intent}
+        shift_date = clean_cell(next_shift["shift_date"])
+        start = clean_cell(next_shift["start_time"])
+        end = clean_cell(next_shift["end_time"])
+        return {"answer": f"Your next shift is {shift_date} from {start} to {end}.", "date": shift_date, "matched_intent": query.matched_intent}
 
     if query.intent == "overlap":
-        subject_raw = query.person or query.overlap_target or ""
+        subject_raw = query.overlap_target or query.person or ""
         subject = _resolve_person_name(subject_raw, day_rows, aliases)
+        if not subject and query.person:
+            subject = _resolve_person_name(query.person, day_rows, aliases)
         if not subject:
             raise ValueError("person is required for this question type")
         person_working, coworkers = _get_overlap_people(day_rows, subject)
         if not person_working:
-            answer = f"{_display_name(subject, aliases)} is not scheduled {query.day_word}."
-        elif coworkers:
-            answer = f"{_display_name(subject, aliases)} is working with {join_human_names([_display_name(name, aliases) for name in coworkers])} {query.day_word}."
+            return {"answer": f"{_display_name(subject, aliases)} is not scheduled {label}.", "date": query.date, "matched_intent": query.matched_intent}
+        if not coworkers:
+            return {"answer": f"{_display_name(subject, aliases)} is working solo {label}.", "date": query.date, "matched_intent": query.matched_intent}
+        display = [_display_name(n, aliases) for n in coworkers]
+        return {"answer": f"{_display_name(subject, aliases)} is working with {join_human_names(display)} {label}.", "date": query.date, "matched_intent": query.matched_intent}
+
+    if query.intent in {"next_overlap_with_person", "next_overlap_between_people"}:
+        if query.intent == "next_overlap_between_people":
+            if len(query.target_people) != 2:
+                return {"answer": "Please name the two people for the overlap check.", "date": query.date, "matched_intent": query.matched_intent}
+            first = _resolve_person_name(query.target_people[0], all_rows, aliases)
+            second = _resolve_person_name(query.target_people[1], all_rows, aliases)
         else:
-            answer = f"{_display_name(subject, aliases)} is working solo {query.day_word}."
-        return {"answer": answer, "date": query.date_range[0], "matched_intent": query.matched_intent}
+            first = _resolve_person_name(query.person or "", all_rows, aliases)
+            second = _resolve_person_name(query.overlap_target or "", all_rows, aliases)
+            if not first:
+                return {"answer": "I could not tell who you are. Add a person or current-user context.", "date": query.date, "matched_intent": query.matched_intent}
+            if not second:
+                return {"answer": "I could not resolve that person.", "date": query.date, "matched_intent": query.matched_intent}
 
-    if query.intent in {"opening", "closing"}:
-        phase = query.shift_phase or ("earliest_start_overall" if query.intent == "opening" else "latest_finish_overall")
-        selected, _minute, used_management = _pick_opening_or_closing(day_rows, phase, management_terms)
-        if not selected:
-            answer = f"I could not find a {query.intent} shift for {query.day_word}."
-            return {"answer": answer, "date": query.date_range[0], "matched_intent": query.matched_intent}
+        if not first or not second:
+            return {"answer": "I could not confidently resolve both people.", "date": query.date, "matched_intent": query.matched_intent}
 
-        display_selected = [_display_name(name, aliases) for name in selected]
-        lead = display_selected[0]
-        peers = display_selected[1:]
-        verb = "is" if len(display_selected) == 1 else "are"
+        overlap = _find_next_overlap(future_rows, first, second, now_local)
+        if not overlap:
+            if query.intent == "next_overlap_with_person":
+                return {"answer": f"I could not find a future overlap for you and {_display_name(second, aliases)}.", "date": query.date, "matched_intent": query.matched_intent}
+            return {"answer": f"I could not find a future overlap for {_display_name(first, aliases)} and {_display_name(second, aliases)}.", "date": query.date, "matched_intent": query.matched_intent}
 
-        if used_management and peers:
-            if query.intent == "opening":
-                answer = f"{lead} is opening {query.day_word}, with {join_human_names(peers)} starting at the same time."
-            else:
-                answer = f"{lead} is closing {query.day_word}, with {join_human_names(peers)} finishing at the same time."
+        overlap_date, start, end = overlap
+        weekday = _weekday_label_from_date(overlap_date)
+        if query.intent == "next_overlap_with_person":
+            return {"answer": f"You next work with {_display_name(second, aliases)} on {weekday} from {start} to {end}.", "date": overlap_date, "matched_intent": query.matched_intent}
+        return {"answer": f"{_display_name(first, aliases)} and {_display_name(second, aliases)} next work together on {weekday} from {start} to {end}.", "date": overlap_date, "matched_intent": query.matched_intent}
+
+    if query.intent in {"rota_summary", "my_rota_summary"}:
+        if query.intent == "my_rota_summary":
+            subject = _resolve_person_name(query.person or "", rows, aliases)
+            if not subject:
+                raise ValueError("person is required for this question type")
+            mine = [r for r in rows if sanitize_person_key(r["employee"]) == subject]
+            summary = _summarize_period(mine, aliases, include_times=True)
         else:
-            if query.intent == "opening":
-                answer = f"{join_human_names(display_selected)} {verb} opening {query.day_word}."
-            else:
-                answer = f"{join_human_names(display_selected)} {verb} closing {query.day_word}."
-        return {"answer": answer, "date": query.date_range[0], "matched_intent": query.matched_intent}
-
-    if query.intent == "rota_summary":
-        scope_label = "week" if query.summary_scope == "week" else "day"
-        summary = _summarize_period(rows, aliases)
-        return {
-            "answer": f"{scope_label.title()} summary: {summary}",
-            "date": query.date_range[0],
-            "matched_intent": query.matched_intent,
-        }
+            summary = _summarize_period(rows, aliases)
+        return {"answer": summary, "date": query.date, "matched_intent": query.matched_intent}
 
     return default_unknown

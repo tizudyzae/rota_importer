@@ -139,6 +139,7 @@ def test_intent_matching_labels_are_specific():
     assert app_module.parse_ask_intent("who is working this morning") == "who_is_working_morning"
     assert app_module.parse_ask_intent("when do i next work") == "next_shift_for_person"
     assert app_module.parse_ask_intent("when are alex and sam next working together") == "next_overlap_between_people"
+    assert app_module.parse_ask_intent("what time is alex working on friday") == "person_shift_time"
 
 
 def test_api_ask_friday_specific_question_not_today(tmp_path):
@@ -250,6 +251,52 @@ def test_api_ask_overlap_canonical_and_alias(tmp_path):
         "answer": "Boss is working with Lex, Laura, Sam, and Tom tomorrow.",
         "date": days["tomorrow"],
         "matched_intent": "overlap",
+    }
+
+
+def test_api_ask_specific_person_time_on_weekday(tmp_path):
+    client, days = _build_client(tmp_path)
+    headers = {"Authorization": "Bearer test-token"}
+
+    response = client.post(
+        "/api/ask",
+        json={"question": "what time is Alex working on friday?"},
+        headers=headers,
+    )
+    assert response.status_code == 200
+    assert response.json() == {
+        "answer": "Lex is working on friday from 11:00 to 19:00.",
+        "date": days["friday"],
+        "matched_intent": "person_shift_time",
+    }
+
+
+def test_api_ask_specific_person_time_alias_and_not_working(tmp_path):
+    client, days = _build_client(tmp_path)
+    headers = {"Authorization": "Bearer test-token"}
+
+    alias = client.post(
+        "/api/ask",
+        json={"question": "when is Boss working on friday?"},
+        headers=headers,
+    )
+    off = client.post(
+        "/api/ask",
+        json={"question": "what time is Debbie working on friday?"},
+        headers=headers,
+    )
+
+    assert alias.status_code == 200
+    assert alias.json() == {
+        "answer": "Boss is working on friday from 09:00 to 17:00.",
+        "date": days["friday"],
+        "matched_intent": "person_shift_time",
+    }
+    assert off.status_code == 200
+    assert off.json() == {
+        "answer": "Debbie is not working on friday.",
+        "date": days["friday"],
+        "matched_intent": "person_shift_time",
     }
 
 

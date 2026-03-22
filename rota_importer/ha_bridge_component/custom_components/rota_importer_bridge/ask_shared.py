@@ -234,6 +234,18 @@ def _extract_overlap_people(raw_question: str, normalized: str) -> tuple[Optiona
     return None, []
 
 
+def _extract_named_person_for_shift_time(normalized: str) -> Optional[str]:
+    patterns = [
+        r"\b(?:what time|when)\s+is\s+([a-z][a-z\s']+?)\s+(?:working|in|on)\b",
+        r"\b(?:what time|when)\s+does\s+([a-z][a-z\s']+?)\s+(?:work|start|finish)\b",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, normalized)
+        if match:
+            return sanitize_person_key(match.group(1))
+    return None
+
+
 def _connect(db_path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(db_path)
     conn.row_factory = sqlite3.Row
@@ -613,6 +625,10 @@ def normalize_to_structured_query(question: str, person: Optional[str], now_valu
         intent = "closing"
         matched = "closing_shift"
         shift_phase = "management_led_closing"
+    elif _extract_named_person_for_shift_time(normalized) and any(token in normalized for token in ["what time", "when"]):
+        intent = "person_shift_time"
+        matched = "person_shift_time"
+        overlap_target = _extract_named_person_for_shift_time(normalized)
     elif ("working with" in normalized or re.search(r"\bwho\s+am\s+i\s+with\b", normalized) or re.search(r"\bwho\s+is\s+[a-z].*\s+working\s+with\b", normalized)):
         intent = "overlap"
         matched = "overlap"
@@ -781,6 +797,24 @@ def build_ask_response(db_path: str | Path, question: str, person: Optional[str]
         if query.intent == "my_start_time":
             return {"answer": f"You start at {shift[0]} on {label}.", "date": query.date, "matched_intent": query.matched_intent}
         return {"answer": f"You finish at {shift[1]} on {label}.", "date": query.date, "matched_intent": query.matched_intent}
+
+    if query.intent == "person_shift_time":
+        requested_name = query.overlap_target or ""
+        subject = _resolve_person_name(requested_name, all_rows, aliases)
+        if not subject:
+            return {"answer": "I could not resolve that person.", "date": query.date, "matched_intent": query.matched_intent}
+        shift = _person_shift_for_day(day_rows, subject)
+        if not shift:
+            return {
+                "answer": f"{_display_name(subject, aliases)} is not working on {label}.",
+                "date": query.date,
+                "matched_intent": query.matched_intent,
+            }
+        return {
+            "answer": f"{_display_name(subject, aliases)} is working on {label} from {shift[0]} to {shift[1]}.",
+            "date": query.date,
+            "matched_intent": query.matched_intent,
+        }
 
     if query.intent == "next_shift_for_person":
         subject = _resolve_person_name(query.person or "", all_rows, aliases)

@@ -5,6 +5,8 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional
+from zoneinfo import ZoneInfo
+import os
 import re
 import sqlite3
 
@@ -41,8 +43,26 @@ def hhmm_to_minutes(value: str) -> Optional[int]:
     return total
 
 
+def _resolve_local_now(now_value: Optional[datetime] = None) -> datetime:
+    if now_value is not None:
+        return now_value
+
+    tz_name = clean_cell(
+        os.environ.get("TZ", "")
+        or os.environ.get("HA_TIME_ZONE", "")
+        or os.environ.get("HASS_TIME_ZONE", "")
+    )
+    if tz_name:
+        try:
+            return datetime.now(ZoneInfo(tz_name))
+        except Exception:
+            pass
+
+    return datetime.now().astimezone()
+
+
 def resolve_question_date(question: str, now_value: Optional[datetime] = None) -> tuple[str, str]:
-    now_local = now_value or datetime.now()
+    now_local = _resolve_local_now(now_value=now_value)
     question_clean = clean_cell(question).lower()
 
     if "tomorrow" in question_clean:

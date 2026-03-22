@@ -2,6 +2,7 @@ from datetime import datetime
 import os
 from pathlib import Path
 import sys
+from zoneinfo import ZoneInfo
 
 from fastapi.testclient import TestClient
 
@@ -73,6 +74,15 @@ def test_date_parsing():
     assert today_label == "today"
     assert tomorrow == "2026-03-22"
     assert tomorrow_label == "tomorrow"
+
+
+def test_date_parsing_uses_configured_timezone(monkeypatch):
+    monkeypatch.setenv("TZ", "Pacific/Honolulu")
+    expected_today = datetime.now(ZoneInfo("Pacific/Honolulu")).date().isoformat()
+    today, today_label = app_module.resolve_question_date("who is working today?")
+
+    assert today == expected_today
+    assert today_label == "today"
 
 
 def test_api_ask_successful_responses(tmp_path):

@@ -91,6 +91,26 @@ def _get_latest_upload_id(db_path: Path) -> Optional[int]:
     return row["id"] if row else None
 
 
+def _get_latest_upload_id_for_date(db_path: Path, shift_date: str) -> Optional[int]:
+    with _connect(db_path) as conn:
+        row = conn.execute(
+            """
+            SELECT u.id
+            FROM uploads u
+            WHERE EXISTS (
+                SELECT 1
+                FROM shifts s
+                WHERE s.upload_id = u.id
+                  AND s.shift_date = ?
+            )
+            ORDER BY u.uploaded_at DESC, u.id DESC
+            LIMIT 1
+            """,
+            (shift_date,),
+        ).fetchone()
+    return row["id"] if row else None
+
+
 def _get_day_shifts(db_path: Path, upload_id: int, shift_date: str) -> list[sqlite3.Row]:
     with _connect(db_path) as conn:
         return conn.execute(
@@ -182,7 +202,7 @@ def build_ask_response(db_path: str | Path, question: str, person: Optional[str]
             "matched_intent": matched_intent,
         }
 
-    upload_id = _get_latest_upload_id(db_file)
+    upload_id = _get_latest_upload_id_for_date(db_file, resolved_date) or _get_latest_upload_id(db_file)
     if not upload_id:
         return {
             "answer": f"I could not find rota data for {day_word}.",

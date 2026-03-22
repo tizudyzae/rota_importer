@@ -237,3 +237,38 @@ def test_api_ha_bridge_matches_api_ask_response_shape(tmp_path):
     assert bridge_response.status_code == 200
     assert set(api_ask_response.json().keys()) == {"answer", "date", "matched_intent"}
     assert set(bridge_response.json().keys()) == {"answer", "date", "matched_intent"}
+
+
+def test_api_ask_falls_back_to_latest_upload_with_requested_date(tmp_path):
+    client, today, tomorrow = _build_client(tmp_path)
+    headers = {"Authorization": "Bearer test-token"}
+
+    with app_module.get_conn() as conn:
+        cur = conn.execute(
+            "INSERT INTO uploads (original_filename, stored_filename, uploaded_at) VALUES (?, ?, ?)",
+            ("newer.pdf", "newer.pdf", datetime.utcnow().isoformat(timespec="seconds")),
+        )
+        newer_upload_id = cur.lastrowid
+        conn.execute(
+            """
+            INSERT INTO shifts (
+                upload_id, employee, day_name, day_header, shift_date, raw_cell,
+                start_time, end_time, total_hours, row_index
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (newer_upload_id, "Future Person", "sun", "Sun", tomorrow, "09:00-17:00", "09:00", "17:00", "8", 1),
+        )
+        conn.commit()
+
+    who_is_working = client.post(
+        "/api/ask",
+        json={"question": "who is working today?"},
+        headers=headers,
+    )
+
+    assert who_is_working.status_code == 200
+    assert who_is_working.json() == {
+        "answer": "Tom, Nathan, Alex, and Sam are working today.",
+        "date": today,
+        "matched_intent": "who_is_working_today",
+    }

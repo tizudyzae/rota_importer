@@ -83,6 +83,25 @@
     return `${APP_BASE}${path}`;
   }
 
+  async function buildHttpError(resp, fallbackMessage) {
+    const text = await resp.text();
+    let parsed = null;
+    try {
+      parsed = text ? JSON.parse(text) : null;
+    } catch (err) {
+      // plain text/HTML error response, keep fallback
+    }
+
+    const detail = parsed && typeof parsed === "object" ? parsed.detail : null;
+    const detailMessage = detail && typeof detail === "object"
+      ? (detail.message || detail.error || "")
+      : (typeof detail === "string" ? detail : "");
+    const requestId = detail && typeof detail === "object" ? detail.request_id : "";
+    const suffix = requestId ? ` (request ${requestId})` : "";
+    const message = detailMessage || text || `${fallbackMessage}: ${resp.status}`;
+    return new Error(`${message}${suffix}`.trim());
+  }
+
   function escapeHtml(value) {
     return String(value ?? "")
       .replace(/&/g, "&amp;")
@@ -822,13 +841,17 @@
     const previewRoot = q("#notifPreviewOutput");
     if (!previewRoot) return;
 
+    debugLog("Refreshing notification preview");
     const resp = await fetch(apiUrl("/api/notification_preview"), { cache: "no-store" });
     if (!resp.ok) {
-      const text = await resp.text();
-      throw new Error(text || `Preview failed: ${resp.status}`);
+      throw await buildHttpError(resp, "Preview failed");
     }
 
     const payload = await resp.json();
+    debugLog("Notification preview refreshed", {
+      notification_count: Array.isArray(payload.notifications) ? payload.notifications.length : 0,
+      enabled: Boolean(payload.enabled),
+    });
     previewRoot.textContent = JSON.stringify(payload, null, 2);
   }
 
@@ -935,6 +958,7 @@
         await refreshNotificationPreview();
         setNotificationStatus("Preview updated.");
       } catch (err) {
+        debugError("Preview refresh failed", err);
         setNotificationStatus(err.message || "Preview failed", true);
       }
     });
@@ -955,18 +979,20 @@
         await refreshNotificationDebugLog();
         setNotificationStatus("Notification settings saved.");
       } catch (err) {
+        debugError("Notification save failed", err);
         setNotificationStatus(err.message || "Save failed", true);
       }
     });
 
     q("#notifTest")?.addEventListener("click", async () => {
       try {
+        debugLog("Sending test notifications");
         const resp = await fetch(apiUrl("/api/test_notification"), { method: "POST" });
         if (!resp.ok) {
-          const text = await resp.text();
-          throw new Error(text || `Test failed: ${resp.status}`);
+          throw await buildHttpError(resp, "Test failed");
         }
         const payload = await resp.json();
+        debugLog("Test notification response", payload);
         await refreshNotificationDebugLog();
         if (payload.failed_count) {
           setNotificationStatus(
@@ -977,6 +1003,7 @@
           setNotificationStatus(`Test sent (${payload.count || 0}).`);
         }
       } catch (err) {
+        debugError("Test notification failed", err);
         setNotificationStatus(err.message || "Test failed", true);
       }
     });

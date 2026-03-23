@@ -221,17 +221,23 @@ def test_api_ask_am_i_off_and_start_finish_time(tmp_path):
     client, days = _build_client(tmp_path)
     headers = {"Authorization": "Bearer test-token"}
 
+    working_today = client.post("/api/ask", json={"question": "am i working today", "person": "Nathan"}, headers=headers)
     off = client.post("/api/ask", json={"question": "am i off today", "person": "Debbie"}, headers=headers)
     start = client.post("/api/ask", json={"question": "when do i start today", "person": "Nathan"}, headers=headers)
     finish = client.post("/api/ask", json={"question": "when do i finish friday", "person": "Nathan"}, headers=headers)
 
+    assert working_today.json() == {
+        "answer": "You are working today from 06:00 to 14:00.",
+        "date": days["today"],
+        "matched_intent": "am_i_working",
+    }
     assert off.json() == {
-        "answer": "Yes, you are off on today.",
+        "answer": "Yes, you are off today.",
         "date": days["today"],
         "matched_intent": "am_i_off",
     }
     assert start.json() == {
-        "answer": "You start at 06:00 on today.",
+        "answer": "You start at 06:00 today.",
         "date": days["today"],
         "matched_intent": "my_start_time",
     }

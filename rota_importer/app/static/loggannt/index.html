@@ -3891,6 +3891,7 @@
       const model=week.model;
       const perDay=Array.isArray(week.perDay)?week.perDay:[];
       const dayHeaders=Array.isArray(model.dayHeaders)?model.dayHeaders:[];
+      const dateRangeLabel=resolveDateRangeLabelForWeek(model,week.metadata,layout) || '';
       if(showHeading){
         const heading=document.createElement('div');
         heading.className='sheet-week-heading';

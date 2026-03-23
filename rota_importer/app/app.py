@@ -10,7 +10,8 @@ import sqlite3
 import sys
 import threading
 import time
-from datetime import datetime, timedelta
+import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib import error as urlerror
@@ -75,6 +76,10 @@ def get_conn() -> sqlite3.Connection:
 
 def now_iso() -> str:
     return datetime.utcnow().isoformat(timespec="seconds")
+
+
+def utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
 def clean_cell(value) -> str:
@@ -1817,9 +1822,18 @@ def build_notification_payload_from_settings() -> dict:
     today = datetime.now().strftime("%Y-%m-%d")
     notifications = []
 
+    _LOGGER.debug(
+        "Building notification payload (enabled=%s, subjects=%s, weekdays=%s, notify_before_end_enabled=%s)",
+        settings.get("enabled"),
+        settings.get("subject_names", []),
+        settings.get("weekdays", []),
+        settings.get("notify_before_end_enabled"),
+    )
+
     for subject_name in settings["subject_names"]:
         notify_service = clean_cell(settings["subject_service_map"].get(subject_name))
         if not notify_service:
+            _LOGGER.debug("Skipping subject '%s' because notify service is empty", subject_name)
             continue
         is_critical = bool(sanitize_bool(settings.get("subject_critical_map", {}).get(subject_name), default=False))
 
@@ -1902,8 +1916,17 @@ def build_notification_payload_from_settings() -> dict:
                 start_time = parsed_range.group(1)
 
         if re.fullmatch(r"\d{2}:\d{2}", start_time):
-            shift_start = datetime.strptime(f"{today} {start_time}", "%Y-%m-%d %H:%M")
-            trigger_at = (shift_start - timedelta(hours=2)).isoformat(timespec="minutes")
+            shift_start = parse_shift_datetime(today, start_time)
+            if shift_start:
+                trigger_at = (shift_start - timedelta(hours=2)).isoformat(timespec="minutes")
+            else:
+                _LOGGER.warning(
+                    "Invalid start time for subject '%s' (today=%s, start_time=%s, shift=%s)",
+                    subject_name,
+                    today,
+                    start_time,
+                    rota_context.get("shift"),
+                )
 
         base_notification = {
             "subject_name": subject_name,
@@ -1930,7 +1953,16 @@ def build_notification_payload_from_settings() -> dict:
         if not re.fullmatch(r"\d{2}:\d{2}", end_time):
             continue
 
-        shift_end = datetime.strptime(f"{today} {end_time}", "%Y-%m-%d %H:%M")
+        shift_end = parse_shift_datetime(today, end_time)
+        if not shift_end:
+            _LOGGER.warning(
+                "Invalid end time for subject '%s' (today=%s, end_time=%s, shift=%s)",
+                subject_name,
+                today,
+                end_time,
+                rota_context.get("shift"),
+            )
+            continue
         team_snapshot = get_shift_team_snapshot(
             rota_context.get("upload_id"),
             today,
@@ -1983,6 +2015,38 @@ def parse_iso_datetime(raw: str) -> Optional[datetime]:
         return datetime.fromisoformat(text)
     except ValueError:
         return None
+
+
+def parse_shift_datetime(day_iso: str, hhmm: str) -> Optional[datetime]:
+    """
+    Parses rota hh:mm values safely, including 24:00 (treated as next-day midnight).
+    Returns None for invalid values instead of raising exceptions.
+    """
+    day_text = clean_cell(day_iso)
+    time_text = clean_cell(hhmm)
+    if not day_text or not re.fullmatch(r"\d{2}:\d{2}", time_text):
+        return None
+
+    try:
+        base_day = datetime.strptime(day_text, "%Y-%m-%d")
+    except ValueError:
+        return None
+
+    hours_text, minutes_text = time_text.split(":", 1)
+    try:
+        hours = int(hours_text)
+        minutes = int(minutes_text)
+    except ValueError:
+        return None
+
+    if minutes < 0 or minutes > 59:
+        return None
+    if hours == 24 and minutes == 0:
+        return base_day + timedelta(days=1)
+    if hours < 0 or hours > 23:
+        return None
+
+    return base_day.replace(hour=hours, minute=minutes)
 
 
 def make_dispatch_key(item: dict) -> str:
@@ -2075,6 +2139,14 @@ def dispatch_notification(item: dict) -> None:
         "POST",
         f"/services/{domain}/{service}",
         service_payload,
+    )
+    _LOGGER.info(
+        "Notification dispatch attempted (subject=%s, service=%s, status=%s, kind=%s, trigger_at=%s)",
+        item.get("subject_name", ""),
+        notify_service,
+        status_code,
+        item.get("notification_kind", ""),
+        item.get("trigger_at", ""),
     )
 
     add_notification_debug_log(
@@ -2177,6 +2249,7 @@ def call_home_assistant_api(method: str, path: str, payload: Optional[dict] = No
         body = json.dumps(payload).encode("utf-8")
 
     req = urlrequest.Request(url, data=body, headers=headers, method=method.upper())
+    _LOGGER.debug("Calling Home Assistant API (%s %s)", method.upper(), path)
 
     try:
         with urlrequest.urlopen(req, timeout=15) as response:
@@ -2194,6 +2267,7 @@ def call_home_assistant_api(method: str, path: str, payload: Optional[dict] = No
         except Exception:
             return exc.code, raw
     except Exception as exc:
+        _LOGGER.exception("Failed calling Home Assistant API (%s %s): %s", method.upper(), path, exc)
         raise HTTPException(status_code=500, detail=f"Failed to call Home Assistant API: {exc}") from exc
 
 
@@ -2444,8 +2518,28 @@ async def api_put_notification_settings(request: Request):
 
 @app.get("/api/notification_preview")
 def api_notification_preview():
-    payload = build_notification_payload_from_settings()
-    return JSONResponse(payload)
+    request_id = uuid.uuid4().hex[:8]
+    try:
+        payload = build_notification_payload_from_settings()
+        _LOGGER.info(
+            "notification_preview ok (request_id=%s, notifications=%s)",
+            request_id,
+            len(payload.get("notifications") or []),
+        )
+        return JSONResponse(payload)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _LOGGER.exception("notification_preview failed (request_id=%s): %s", request_id, exc)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message": "Failed to build notification preview",
+                "request_id": request_id,
+                "error": str(exc),
+                "timestamp": utc_now_iso(),
+            },
+        ) from exc
 
 
 @app.get("/api/ha_notify_services")
@@ -2456,7 +2550,23 @@ def api_ha_notify_services():
 
 @app.post("/api/test_notification")
 def api_test_notification():
-    payload = build_notification_payload_from_settings()
+    request_id = uuid.uuid4().hex[:8]
+    try:
+        payload = build_notification_payload_from_settings()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _LOGGER.exception("test_notification payload build failed (request_id=%s): %s", request_id, exc)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "message": "Failed to build notification test payload",
+                "request_id": request_id,
+                "error": str(exc),
+                "timestamp": utc_now_iso(),
+            },
+        ) from exc
+
     notifications = payload.get("notifications") or []
     if not notifications:
         raise HTTPException(status_code=400, detail="No paired subjects/services configured")
@@ -2483,6 +2593,14 @@ def api_test_notification():
                     "error": str(exc),
                 }
             )
+
+    _LOGGER.info(
+        "test_notification complete (request_id=%s, attempted=%s, sent=%s, failed=%s)",
+        request_id,
+        len(notifications),
+        len(sent_via),
+        len(failed),
+    )
 
     return JSONResponse(
         {

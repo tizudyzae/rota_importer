@@ -44,6 +44,7 @@ QUESTION_PREFIXES = ["what is", "what's", "whats", "give me", "tell me"]
 MORNING_WINDOW = ("05:00", "11:59")
 EVENING_WINDOW = ("17:00", "23:59")
 SELF_WORDS = {"i", "me", "my", "i am", "i'm", "am i"}
+NO_PREPOSITION_DAY_LABELS = {"today", "tomorrow", "this morning", "this evening", "this week", "next week", "this weekend"}
 
 
 @dataclass
@@ -244,6 +245,15 @@ def _extract_named_person_for_shift_time(normalized: str) -> Optional[str]:
         if match:
             return sanitize_person_key(match.group(1))
     return None
+
+
+def _on_day_phrase(day_label: str) -> str:
+    label = clean_cell(day_label)
+    if not label:
+        return "that day"
+    if label.lower() in NO_PREPOSITION_DAY_LABELS:
+        return label
+    return f"on {label}"
 
 
 def _connect(db_path: Path) -> sqlite3.Connection:
@@ -795,25 +805,26 @@ def build_ask_response(db_path: str | Path, question: str, person: Optional[str]
             raise ValueError("person is required for this question type")
         shift = _person_shift_for_day(day_rows, subject)
         is_working = shift is not None
+        on_label = _on_day_phrase(label)
 
         if query.intent == "am_i_working":
             if is_working:
-                return {"answer": f"You are working on {label} from {shift[0]} to {shift[1]}.", "date": query.date, "matched_intent": query.matched_intent}
-            return {"answer": f"You are not working on {label}.", "date": query.date, "matched_intent": query.matched_intent}
+                return {"answer": f"You are working {on_label} from {shift[0]} to {shift[1]}.", "date": query.date, "matched_intent": query.matched_intent}
+            return {"answer": f"You are not working {on_label}.", "date": query.date, "matched_intent": query.matched_intent}
 
         if query.intent == "am_i_off":
             if is_working:
-                return {"answer": f"No, you are working on {label} from {shift[0]} to {shift[1]}.", "date": query.date, "matched_intent": query.matched_intent}
-            return {"answer": f"Yes, you are off on {label}.", "date": query.date, "matched_intent": query.matched_intent}
+                return {"answer": f"No, you are working {on_label} from {shift[0]} to {shift[1]}.", "date": query.date, "matched_intent": query.matched_intent}
+            return {"answer": f"Yes, you are off {on_label}.", "date": query.date, "matched_intent": query.matched_intent}
 
         if not is_working:
-            return {"answer": f"You are not working on {label}.", "date": query.date, "matched_intent": query.matched_intent}
+            return {"answer": f"You are not working {on_label}.", "date": query.date, "matched_intent": query.matched_intent}
 
         if query.intent == "my_shift_detail":
-            return {"answer": f"You are on shift on {label} from {shift[0]} to {shift[1]}.", "date": query.date, "matched_intent": query.matched_intent}
+            return {"answer": f"You are on shift {on_label} from {shift[0]} to {shift[1]}.", "date": query.date, "matched_intent": query.matched_intent}
         if query.intent == "my_start_time":
-            return {"answer": f"You start at {shift[0]} on {label}.", "date": query.date, "matched_intent": query.matched_intent}
-        return {"answer": f"You finish at {shift[1]} on {label}.", "date": query.date, "matched_intent": query.matched_intent}
+            return {"answer": f"You start at {shift[0]} {on_label}.", "date": query.date, "matched_intent": query.matched_intent}
+        return {"answer": f"You finish at {shift[1]} {on_label}.", "date": query.date, "matched_intent": query.matched_intent}
 
     if query.intent == "person_shift_time":
         requested_name = query.overlap_target or ""

@@ -968,7 +968,14 @@
         }
         const payload = await resp.json();
         await refreshNotificationDebugLog();
-        setNotificationStatus(`Test sent (${payload.count || 0}).`);
+        if (payload.failed_count) {
+          setNotificationStatus(
+            `Test sent (${payload.count || 0}), ${payload.failed_count} failed. Check debug log.`,
+            true
+          );
+        } else {
+          setNotificationStatus(`Test sent (${payload.count || 0}).`);
+        }
       } catch (err) {
         setNotificationStatus(err.message || "Test failed", true);
       }

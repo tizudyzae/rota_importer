@@ -2462,15 +2462,35 @@ def api_test_notification():
         raise HTTPException(status_code=400, detail="No paired subjects/services configured")
 
     sent_via = []
+    failed = []
     for item in notifications:
-        dispatch_notification(item)
-        sent_via.append(item["notify_service"])
+        try:
+            dispatch_notification(item)
+            sent_via.append(item["notify_service"])
+        except HTTPException as exc:
+            failed.append(
+                {
+                    "subject_name": item.get("subject_name", ""),
+                    "notify_service": item.get("notify_service", ""),
+                    "error": exc.detail,
+                }
+            )
+        except Exception as exc:
+            failed.append(
+                {
+                    "subject_name": item.get("subject_name", ""),
+                    "notify_service": item.get("notify_service", ""),
+                    "error": str(exc),
+                }
+            )
 
     return JSONResponse(
         {
             "ok": True,
             "sent_via": sent_via,
             "count": len(sent_via),
+            "failed": failed,
+            "failed_count": len(failed),
         }
     )
 

@@ -2,6 +2,7 @@ import csv
 import hmac
 import io
 import json
+import logging
 import os
 import re
 import shutil
@@ -63,6 +64,7 @@ ASK_RATE_LIMIT_MAX_REQUESTS = 30
 _ask_auth_cache: dict[str, tuple[float, bool]] = {}
 _ask_rate_limit_state: dict[str, list[float]] = {}
 _ask_rate_limit_lock = threading.Lock()
+_LOGGER = logging.getLogger(__name__)
 
 
 def get_conn() -> sqlite3.Connection:
@@ -2544,7 +2546,105 @@ def build_ask_json_response(question: str, person: Optional[str]) -> JSONRespons
         response_payload = build_ask_response(question=question, person=person)
     except ValueError as exc:
         return JSONResponse(status_code=400, content={"error": str(exc)})
+
+    maybe_send_person_ask_notification(requested_person=person, response_payload=response_payload)
     return JSONResponse(response_payload)
+
+
+def _resolve_notification_subject_from_person(requested_person: str, settings: dict) -> Optional[str]:
+    person_clean = sanitize_person_key(requested_person)
+    if not person_clean:
+        return None
+
+    configured_subjects = [
+        sanitize_person_key(name)
+        for name in settings.get("subject_names", [])
+        if sanitize_person_key(name)
+    ]
+    if not configured_subjects:
+        return None
+
+    subject_by_key = {name.lower(): name for name in configured_subjects}
+    direct_match = subject_by_key.get(person_clean.lower())
+    if direct_match:
+        return direct_match
+
+    aliases = load_alias_preferences()
+    for subject in configured_subjects:
+        alias_label = clean_cell(alias_for_name(subject, aliases))
+        if alias_label and alias_label.lower() == person_clean.lower():
+            return subject
+
+    return None
+
+
+def _build_ask_notification_data(settings: dict, is_critical: bool) -> dict:
+    data_payload = settings.get("extra_data") if isinstance(settings.get("extra_data"), dict) else {}
+    data_payload = json.loads(json.dumps(data_payload))
+
+    if settings.get("sound") or is_critical:
+        push = data_payload.get("push", {})
+        sound_payload = push.get("sound", {})
+        if not isinstance(push, dict):
+            push = {}
+        if not isinstance(sound_payload, dict):
+            sound_payload = {}
+
+        sound_payload["name"] = settings.get("sound") or "default"
+        if is_critical:
+            sound_payload["critical"] = 1
+            sound_payload["volume"] = 1.0
+        push["sound"] = sound_payload
+        data_payload["push"] = push
+
+    image_url = clean_cell(settings.get("image_url"))
+    if image_url:
+        data_payload["image"] = image_url
+
+    return data_payload
+
+
+def maybe_send_person_ask_notification(requested_person: Optional[str], response_payload: dict) -> None:
+    if not requested_person:
+        return
+
+    answer_text = clean_cell(response_payload.get("answer", ""))
+    if not answer_text:
+        return
+
+    settings = serialize_notification_settings(get_notification_settings_row())
+    if not settings.get("enabled"):
+        return
+
+    subject_name = _resolve_notification_subject_from_person(requested_person=requested_person, settings=settings)
+    if not subject_name:
+        return
+
+    notify_service = clean_cell(settings.get("subject_service_map", {}).get(subject_name))
+    if not notify_service:
+        return
+
+    is_critical = bool(sanitize_bool(settings.get("subject_critical_map", {}).get(subject_name), default=False))
+    item = {
+        "subject_name": subject_name,
+        "notify_service": notify_service,
+        "title": "Rota ask response",
+        "message": answer_text,
+        "data": _build_ask_notification_data(settings=settings, is_critical=is_critical),
+        "trigger_at": now_iso(),
+        "critical": is_critical,
+        "notification_kind": "ask_response",
+    }
+
+    try:
+        dispatch_notification(item)
+    except Exception as exc:
+        _LOGGER.warning(
+            "Failed to send ask response notification for subject '%s' via '%s': %s",
+            subject_name,
+            notify_service,
+            exc,
+        )
 
 
 @app.post("/api/ask")

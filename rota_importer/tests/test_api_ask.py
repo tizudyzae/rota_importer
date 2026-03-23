@@ -117,6 +117,29 @@ def _build_client(tmp_path):
     return TestClient(app_module.app), days
 
 
+def _set_people_notification_settings(enabled: bool = True):
+    with app_module.get_conn() as conn:
+        conn.execute(
+            """
+            UPDATE notification_settings
+            SET enabled = ?,
+                subject_names_json = ?,
+                subject_service_map_json = ?,
+                subject_critical_map_json = ?,
+                sound = ?
+            WHERE id = 1
+            """,
+            (
+                1 if enabled else 0,
+                '["Nathan"]',
+                '{"Nathan":"notify.mobile_nathan"}',
+                '{"Nathan":1}',
+                "default",
+            ),
+        )
+        conn.commit()
+
+
 def test_date_resolution_today_tomorrow_weekday_and_next_week():
     now_value = datetime(2026, 3, 22, 9, 0, 0)
     assert app_module.resolve_question_date("who is working today", now_value=now_value) == ("2026-03-22", "today")
@@ -368,3 +391,46 @@ def test_api_shape_and_auth_and_bridge_compatibility(tmp_path):
     unauthorized = client.post("/api/ask", json={"question": "who is working today?"})
     assert unauthorized.status_code == 401
     assert unauthorized.json() == {"error": "unauthorized"}
+
+
+def test_api_ask_person_sends_notification_with_critical_payload(tmp_path, monkeypatch):
+    client, _days = _build_client(tmp_path)
+    headers = {"Authorization": "Bearer test-token"}
+    _set_people_notification_settings(enabled=True)
+
+    calls = []
+
+    def _fake_ha_call(method: str, path: str, payload=None):
+        calls.append({"method": method, "path": path, "payload": payload})
+        return 200, {"ok": True}
+
+    monkeypatch.setattr(app_module, "call_home_assistant_api", _fake_ha_call)
+
+    response = client.post("/api/ask", json={"question": "am i working on friday?", "person": "Boss"}, headers=headers)
+
+    assert response.status_code == 200
+    assert len(calls) == 1
+    assert calls[0]["method"] == "POST"
+    assert calls[0]["path"] == "/services/notify/mobile_nathan"
+    assert calls[0]["payload"]["message"] == "You are working on friday from 09:00 to 17:00."
+    assert calls[0]["payload"]["data"]["push"]["sound"]["critical"] == 1
+    assert calls[0]["payload"]["data"]["push"]["sound"]["volume"] == 1.0
+
+
+def test_api_ask_person_notification_respects_people_settings_enabled_flag(tmp_path, monkeypatch):
+    client, _days = _build_client(tmp_path)
+    headers = {"Authorization": "Bearer test-token"}
+    _set_people_notification_settings(enabled=False)
+
+    calls = []
+
+    def _fake_ha_call(method: str, path: str, payload=None):
+        calls.append({"method": method, "path": path, "payload": payload})
+        return 200, {"ok": True}
+
+    monkeypatch.setattr(app_module, "call_home_assistant_api", _fake_ha_call)
+
+    response = client.post("/api/ask", json={"question": "am i working on friday?", "person": "Nathan"}, headers=headers)
+
+    assert response.status_code == 200
+    assert calls == []

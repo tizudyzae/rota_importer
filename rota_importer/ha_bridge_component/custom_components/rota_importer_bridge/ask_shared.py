@@ -582,6 +582,16 @@ def _weekday_label_from_date(day: str) -> str:
     return WEEKDAY_LABELS[dt.weekday()]
 
 
+def _time_window_label(relative_date: Optional[str], time_window: Optional[str]) -> str:
+    label = clean_cell(relative_date or "today")
+    window = clean_cell(time_window or "")
+    if not window:
+        return label
+    if label == "today":
+        return f"this {window}"
+    return f"{label} {window}"
+
+
 def normalize_to_structured_query(question: str, person: Optional[str], now_value: Optional[datetime] = None) -> StructuredQuery:
     now_local = _resolve_local_now(now_value=now_value)
     normalized = _normalize_input(question)
@@ -732,11 +742,12 @@ def build_ask_response(db_path: str | Path, question: str, person: Optional[str]
 
         if query.time_window:
             people = _people_in_named_window(day_rows, query.time_window)
+            window_label = _time_window_label(query.relative_date, query.time_window)
             if not people:
-                return {"answer": f"No one is scheduled {label}.", "date": query.date, "matched_intent": query.matched_intent}
+                return {"answer": f"No one is scheduled {window_label}.", "date": query.date, "matched_intent": query.matched_intent}
             display = [_display_name(n, aliases) for n in people]
             return {
-                "answer": f"{join_human_names(display)} {'is' if len(display)==1 else 'are'} working {label}.",
+                "answer": f"{join_human_names(display)} {'is' if len(display)==1 else 'are'} working {window_label}.",
                 "date": query.date,
                 "matched_intent": query.matched_intent,
             }

@@ -164,12 +164,12 @@ def test_api_ask_morning_evening_windows(tmp_path):
     evening = client.post("/api/ask", json={"question": "who is working tomorrow evening"}, headers=headers)
 
     assert morning.json() == {
-        "answer": "Boss and Tom are working today.",
+        "answer": "Boss and Tom are working this morning.",
         "date": days["today"],
         "matched_intent": "who_is_working_morning",
     }
     assert evening.json() == {
-        "answer": "Boss, Lex, and Laura are working tomorrow.",
+        "answer": "Boss, Lex, and Laura are working tomorrow evening.",
         "date": days["tomorrow"],
         "matched_intent": "who_is_working_evening",
     }

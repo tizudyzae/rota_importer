@@ -423,6 +423,27 @@ def test_api_ask_person_sends_notification_with_critical_payload(tmp_path, monke
     assert calls[0]["payload"]["data"]["push"]["sound"]["volume"] == 1.0
 
 
+def test_build_shift_end_message_uses_until_for_preexisting_handover_team():
+    team_snapshot = {
+        "handover_managers_details": [
+            {"employee": "Josh", "start_time": "14:30"},
+            {"employee": "Samantha", "start_time": "14:30"},
+        ],
+        "handover_team_details": [
+            {"employee": "Debbie", "start_time": "08:00", "end_time": "16:00"},
+            {"employee": "Ali", "start_time": "14:30", "end_time": "22:00"},
+            {"employee": "George", "start_time": "15:00", "end_time": "21:00"},
+        ],
+    }
+
+    message = app_module.build_shift_end_message("14:30", team_snapshot)
+
+    assert message == (
+        "From 14:30, Josh and Samantha are taking over the shift and they are working with "
+        "Debbie (until 16:00), Ali, and George (15:00)."
+    )
+
+
 def test_api_ask_person_notification_respects_people_settings_enabled_flag(tmp_path, monkeypatch):
     client, _days = _build_client(tmp_path)
     headers = {"Authorization": "Bearer test-token"}

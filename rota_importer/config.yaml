@@ -1,5 +1,5 @@
 name: "Rota PDF Importer"
-version: "2.5.51"
+version: "2.5.52"
 slug: "rota_importer"
 description: "Upload rota PDFs, extract rows, store them, and export CSV"
 url: "https://example.invalid/rota-pdf-importer"

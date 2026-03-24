@@ -1332,8 +1332,10 @@ def format_people_for_handover(
     subject_name: str = "",
     subject_replacement: str = "you",
     reference_start_time: str = "",
+    include_pre_reference_end: bool = False,
 ) -> str:
     labels = []
+    reference_start_minutes = hhmm_to_minutes(reference_start_time) if reference_start_time else None
     for person in people:
         if not isinstance(person, dict):
             continue
@@ -1342,6 +1344,18 @@ def format_people_for_handover(
             continue
         name = personalize_name(name, subject_name, replacement=subject_replacement)
         start_time = clean_cell(person.get("start_time"))
+        end_time = clean_cell(person.get("end_time"))
+        start_minutes = hhmm_to_minutes(start_time) if start_time else None
+        should_show_until = (
+            include_pre_reference_end
+            and end_time
+            and reference_start_minutes is not None
+            and start_minutes is not None
+            and start_minutes < reference_start_minutes
+        )
+        if should_show_until:
+            labels.append(f"{name} (until {end_time})")
+            continue
         show_start = (
             include_non_management_start
             and start_time
@@ -1379,6 +1393,8 @@ def build_shift_end_message(
         include_non_management_start=True,
         aliases=aliases,
         subject_name=subject_name,
+        reference_start_time=end_time,
+        include_pre_reference_end=True,
     )
 
     if handover_managers_text:
@@ -1780,7 +1796,8 @@ def get_shift_team_snapshot(upload_id: Optional[int], today: str, subject_name: 
     )
     handover_team = [item["employee"] for item in handover_team_rows]
     handover_team_details = [
-        {"employee": item["employee"], "start_time": item["start_time"]} for item in handover_team_rows
+        {"employee": item["employee"], "start_time": item["start_time"], "end_time": item["end_time"]}
+        for item in handover_team_rows
     ]
 
     team_with_subject = sorted(

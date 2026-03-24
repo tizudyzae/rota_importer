@@ -283,19 +283,19 @@
       #appearanceControls{display:none !important}
       .ha-notification-panel .control-group{display:grid;gap:6px;margin-bottom:10px}
       .ha-notification-panel label{font-size:12px;font-weight:600;color:var(--ink)}
-      .ha-notification-panel input,.ha-notification-panel textarea,.ha-notification-panel select{width:100%;border:1px solid var(--border);border-radius:10px;padding:8px 10px;background:#fff;color:var(--ink);font:inherit}
+      .ha-notification-panel input,.ha-notification-panel textarea,.ha-notification-panel select{width:100%;border:1px solid var(--border);border-radius:10px;padding:8px 10px;background:var(--surface-input);color:var(--ink);font:inherit}
       .ha-notification-panel .actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}
       .ha-notification-panel .actions .btn-primary{grid-column:span 2}
       .ha-notification-status{font-size:12px;color:var(--muted);margin:6px 0 0}
-      .ha-preview{background:#fff;border:1px solid var(--border);border-radius:10px;padding:10px;font-size:12px;white-space:pre-wrap;word-break:break-word;max-height:180px;overflow:auto}
+      .ha-preview{background:var(--surface-input);border:1px solid var(--border);border-radius:10px;padding:10px;font-size:12px;white-space:pre-wrap;word-break:break-word;max-height:180px;overflow:auto}
       .person-settings-list{display:grid;gap:8px}
-      .person-settings-row{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:8px;padding:8px;border:1px solid var(--border);border-radius:10px;background:#fff}
+      .person-settings-row{display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:8px;padding:8px;border:1px solid var(--border);border-radius:10px;background:var(--surface-input)}
       .person-settings-row .swatch{width:16px;height:16px;border-radius:50%;border:1px solid var(--border)}
       .person-settings-row .meta{font-size:11px;color:var(--muted)}
       .person-settings-row .btn{padding:6px 10px;font-size:11px}
       .person-modal[hidden]{display:none}
-      .person-modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:9999;padding:12px}
-      .person-modal-card{width:min(460px,100%);background:#fff;border-radius:12px;border:1px solid var(--border);padding:12px;display:grid;gap:8px}
+      .person-modal{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:10020;padding:12px}
+      .person-modal-card{width:min(460px,100%);max-height:calc(100vh - 24px);overflow:auto;background:var(--surface);border-radius:12px;border:1px solid var(--border);padding:12px;display:grid;gap:8px;box-shadow:0 24px 48px rgba(0,0,0,.24)}
       .person-modal-actions{display:flex;justify-content:flex-end;gap:8px}
       .person-modal-actions .btn:first-child{margin-right:auto}
       .person-color-preview{height:44px;border-radius:10px;border:1px solid var(--border);display:flex;align-items:center;justify-content:center;font-weight:700}
@@ -303,7 +303,7 @@
       .person-ics-row{display:grid;grid-template-columns:1fr auto auto;gap:8px;align-items:center}
       .person-ics-row input{font-size:12px}
       .person-ics-help{font-size:11px;color:var(--muted);margin-top:4px}
-      .ha-debug-log{background:#fff;border:1px solid var(--border);border-radius:10px;padding:10px;font-size:12px;max-height:220px;overflow:auto}
+      .ha-debug-log{background:var(--surface-input);border:1px solid var(--border);border-radius:10px;padding:10px;font-size:12px;max-height:220px;overflow:auto}
       .ha-debug-log-item{padding:6px 0;border-bottom:1px solid var(--border)}
       .ha-debug-log-item:last-child{border-bottom:none}
     `;
@@ -422,6 +422,10 @@
       </div>
     `;
     panel.appendChild(wrapper);
+    const personModal = q("#notifPersonModal", wrapper);
+    if (personModal && personModal.parentElement !== document.body) {
+      document.body.appendChild(personModal);
+    }
     appendClientDebugLine("INFO", "Notification panel DOM injected");
 
     const weekdays = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];

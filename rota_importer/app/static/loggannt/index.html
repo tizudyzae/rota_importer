@@ -42,6 +42,44 @@
       --column-header-color:#01263a;
       --row-label-size:12px;
       --bar-label-size:11px;
+      --surface-input:#ffffff;
+      --line-bar-name-bg:rgba(255,255,255,.85);
+      --warning-bg:#fff5f5;
+      --warning-border:#fecaca;
+      --warning-icon-bg:#fee2e2;
+      --warning-icon-border:#dc2626;
+      --warning-icon-ink:#b91c1c;
+      --warning-detail:#991b1b;
+      --theme-color:#f5e6c8;
+      color-scheme:light;
+    }
+    :root[data-theme="dark"]{
+      --page-bg:#08121e;
+      --ink:#e6eef7;
+      --muted:#a7b5c4;
+      --grid:#2d4156;
+      --axis:#9fb0c1;
+      --accent:#26b3ea;
+      --accent-strong:#1498cc;
+      --accent-soft:#123549;
+      --focus:#41d4ca;
+      --surface:#122232;
+      --surface-soft:#182a3d;
+      --border:#2d4258;
+      --sheet-bg:#112033;
+      --sheet-border:#5ea7bf;
+      --sheet-header-band:#1f3f56;
+      --column-header-color:#d9f2ff;
+      --surface-input:#0d1a29;
+      --line-bar-name-bg:rgba(13,26,41,.9);
+      --warning-bg:#3a1717;
+      --warning-border:#7f1d1d;
+      --warning-icon-bg:#5b1d1d;
+      --warning-icon-border:#f87171;
+      --warning-icon-ink:#fecaca;
+      --warning-detail:#fecaca;
+      --theme-color:#08121e;
+      color-scheme:dark;
     }
     *{box-sizing:border-box}
     [hidden]{display:none !important}
@@ -75,6 +113,10 @@
     .settings-panel{position:fixed;top:84px;left:20px;width:420px;max-width:calc(100% - 40px);z-index:1990;max-height:calc(100vh - 104px);overflow-y:auto;overscroll-behavior:contain}
     .settings-panel .panel-title{margin-bottom:4px}
     .settings-panel .control-hint{background:transparent;padding:0;margin-bottom:8px}
+    .theme-toggle-row{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:12px 14px;border:1px solid var(--border);border-radius:16px;background:var(--surface-soft);margin-bottom:12px}
+    .theme-toggle-text{display:flex;flex-direction:column;gap:2px;font-weight:700;color:var(--ink);font-size:13px}
+    .theme-toggle-text small{font-size:11px;font-weight:600;color:var(--muted)}
+    .theme-toggle-input{accent-color:var(--accent);width:18px;height:18px;cursor:pointer}
     .saved-week-select{display:flex;flex-direction:column;gap:8px}
     .saved-week-pills{display:flex;flex-wrap:wrap;gap:8px}
     .saved-week-pill{appearance:none;border:1px solid var(--border);background:var(--surface-soft);color:var(--muted);border-radius:999px;padding:8px 12px;font-size:13px;font-weight:700;cursor:pointer;transition:all .2s ease}
@@ -133,7 +175,7 @@
     .pdf-debug-actions .btn{flex:1 1 160px}
     .ctrl-grid{display:grid;gap:14px;grid-template-columns:repeat(auto-fit,minmax(160px,1fr))}
     .ctrl{display:flex;flex-direction:column;gap:6px;font-size:13px;color:var(--muted)}
-    .ctrl input,.ctrl select{padding:9px 11px;border:1px solid var(--border);border-radius:12px;font:14px/1.5 "Averta Std","Nunito Sans","Helvetica Neue",Helvetica,Arial,sans-serif;color:var(--ink);background:#fff;transition:border-color .2s ease,box-shadow .2s ease}
+    .ctrl input,.ctrl select{padding:9px 11px;border:1px solid var(--border);border-radius:12px;font:14px/1.5 "Averta Std","Nunito Sans","Helvetica Neue",Helvetica,Arial,sans-serif;color:var(--ink);background:var(--surface-input);transition:border-color .2s ease,box-shadow .2s ease}
     #selIndividual[multiple]{min-height:160px;padding:12px;border-radius:16px}
     .ctrl input:focus,.ctrl select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(0,123,195,.2)}
     .ctrl input[type="color"]{padding:0;height:40px;border-radius:12px;overflow:hidden}
@@ -195,7 +237,7 @@
     .line-bar{position:absolute;top:50%;transform:translateY(-50%);height:36px;border-radius:18px;background:var(--accent);display:flex;align-items:center;justify-content:center;padding:0 24px;box-shadow:0 12px 24px rgba(0,123,195,.2);color:#fff;min-width:6px;z-index:1}
     .line-bar.highlight{background:#0d9488;box-shadow:0 12px 24px rgba(13,148,136,.18)}
     .line-bar.thin{padding:0 12px}
-    .line-bar-name{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);background:rgba(255,255,255,.85);color:var(--ink);padding:4px 10px;border-radius:999px;font-size:13px;font-weight:700;white-space:nowrap;box-shadow:0 8px 16px rgba(9,42,58,.12)}
+    .line-bar-name{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);background:var(--line-bar-name-bg);color:var(--ink);padding:4px 10px;border-radius:999px;font-size:13px;font-weight:700;white-space:nowrap;box-shadow:0 8px 16px rgba(9,42,58,.12)}
     .line-bar.thin .line-bar-name{display:none}
     .line-bar-time{position:absolute;top:50%;transform:translateY(-50%);font-size:12px;font-weight:700;color:#fff;padding:3px 8px;border-radius:12px;white-space:nowrap;--line-time-shift:0px;z-index:2;pointer-events:none}
     .line-bar-time.start{left:-10px;transform:translate(calc(-100% + var(--line-time-shift,0px)),-50%);background:#059669}
@@ -207,11 +249,11 @@
     .line-chart-empty{border:1px dashed var(--border);border-radius:18px;padding:18px;color:var(--muted);font-size:14px;text-align:center;background:var(--surface-soft)}
     .line-chart-warnings{display:flex;flex-direction:column;gap:12px;color:#b91c1c}
     .line-chart-warnings[hidden]{display:none !important}
-    .line-chart-warning{display:flex;gap:12px;align-items:flex-start;border:1px solid #fecaca;background:#fff5f5;padding:12px 16px;border-radius:18px;box-shadow:0 10px 24px rgba(220,38,38,.12)}
+    .line-chart-warning{display:flex;gap:12px;align-items:flex-start;border:1px solid var(--warning-border);background:var(--warning-bg);padding:12px 16px;border-radius:18px;box-shadow:0 10px 24px rgba(220,38,38,.12)}
     .line-warning-icons{display:flex;gap:6px;flex-shrink:0}
-    .line-warning-icon{width:28px;height:28px;border-radius:50%;background:#fee2e2;border:2px solid #dc2626;color:#b91c1c;font-weight:700;font-size:16px;display:flex;align-items:center;justify-content:center}
+    .line-warning-icon{width:28px;height:28px;border-radius:50%;background:var(--warning-icon-bg);border:2px solid var(--warning-icon-border);color:var(--warning-icon-ink);font-weight:700;font-size:16px;display:flex;align-items:center;justify-content:center}
     .line-warning-text{font-weight:600;font-size:14px}
-    .line-warning-detail{margin-top:2px;font-weight:500;font-size:13px;color:#991b1b}
+    .line-warning-detail{margin-top:2px;font-weight:500;font-size:13px;color:var(--warning-detail)}
     .line-view-placeholder{border:1px dashed var(--border);border-radius:24px;padding:28px;text-align:center;color:var(--muted);background:var(--surface);font-size:15px;box-shadow:0 18px 36px rgba(7,45,65,.08)}
     .line-week-individual{border:1px solid var(--border);border-radius:24px;background:var(--surface);box-shadow:0 18px 36px rgba(7,45,65,.08);padding:24px;display:flex;flex-direction:column;gap:16px}
     .line-week-individual-title{margin:0;font-size:20px;font-weight:700;color:var(--ink)}
@@ -334,9 +376,9 @@
     .appearance-label{display:flex;flex-direction:column;font-weight:700;color:var(--ink);gap:2px;font-size:13px}
     .appearance-label small{font-size:11px;font-weight:600;color:var(--muted)}
     .appearance-inputs{display:flex;align-items:center;gap:8px}
-    .appearance-alias-input{width:140px;padding:6px 10px;border:1px solid var(--border);border-radius:10px;background:#fff;color:var(--ink);font:13px/1.2 "Averta Std","Nunito Sans","Helvetica Neue",Helvetica,Arial,sans-serif}
+    .appearance-alias-input{width:140px;padding:6px 10px;border:1px solid var(--border);border-radius:10px;background:var(--surface-input);color:var(--ink);font:13px/1.2 "Averta Std","Nunito Sans","Helvetica Neue",Helvetica,Arial,sans-serif}
     .appearance-alias-input:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(0,123,195,.16)}
-    .appearance-color-input{width:52px;height:36px;border-radius:12px;border:1px solid var(--border);padding:0;background:#fff;cursor:pointer}
+    .appearance-color-input{width:52px;height:36px;border-radius:12px;border:1px solid var(--border);padding:0;background:var(--surface-input);cursor:pointer}
     .appearance-color-input:focus-visible{outline:3px solid var(--focus);outline-offset:2px}
     .appearance-color-input:disabled{opacity:.5;cursor:not-allowed}
     .appearance-hint{margin-top:4px}
@@ -372,6 +414,13 @@
 <body>
   <button class="settings-toggle" id="btnToggleSettings" type="button" aria-label="Show settings panel" aria-expanded="false">⚙️</button>
   <div class="panel panel-static settings-panel" id="savedWeeksPanel" hidden aria-hidden="true">
+    <div class="theme-toggle-row">
+      <label class="theme-toggle-text" for="toggleDarkMode">
+        <span>Dark mode</span>
+        <small>Switch to a darker, low-glare interface.</small>
+      </label>
+      <input class="theme-toggle-input" id="toggleDarkMode" type="checkbox" role="switch" aria-label="Enable dark mode">
+    </div>
     <details class="control-section ha-settings-section" id="savedWeeksSection">
       <summary>Saved Weeks</summary>
       <div class="control-section-body">
@@ -838,6 +887,7 @@
     const STORAGE_SELECTION_KEY='loggannt.rotas.selection';
     const STORAGE_VIEWER_SELECTION_KEY='loggannt.rotas.viewerSelection';
     const STORAGE_HOME_TIP_KEY='loggannt.rotas.homeTipDismissed';
+    const STORAGE_THEME_KEY='loggannt.rotas.theme';
     const MAX_STORED_WEEKS=4;
 
 
@@ -1896,6 +1946,61 @@
         return false;
       }
     }
+
+    function getStoredThemePreference(){
+      if(!storageSupported) return null;
+      try{
+        const stored=window.localStorage.getItem(STORAGE_THEME_KEY);
+        return stored==='dark' || stored==='light' ? stored : null;
+      }catch(err){
+        console.warn('Failed to read theme preference:',err);
+        return null;
+      }
+    }
+
+    function saveThemePreference(theme){
+      if(!storageSupported) return;
+      try{
+        if(theme==='dark' || theme==='light'){
+          window.localStorage.setItem(STORAGE_THEME_KEY,theme);
+        }else{
+          window.localStorage.removeItem(STORAGE_THEME_KEY);
+        }
+      }catch(err){
+        console.warn('Failed to store theme preference:',err);
+      }
+    }
+
+    function resolvePreferredTheme(){
+      const stored=getStoredThemePreference();
+      if(stored) return stored;
+      if(window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches){
+        return 'dark';
+      }
+      return 'light';
+    }
+
+    function applyTheme(theme,{persist=false}={}){
+      const normalized=theme==='dark'?'dark':'light';
+      document.documentElement.setAttribute('data-theme',normalized);
+      const toggle=document.getElementById('toggleDarkMode');
+      if(toggle){
+        const checked=normalized==='dark';
+        toggle.checked=checked;
+        toggle.setAttribute('aria-checked',checked?'true':'false');
+      }
+      const themeMeta=document.querySelector('meta[name="theme-color"]');
+      if(themeMeta){
+        const computed=getComputedStyle(document.documentElement);
+        const color=(computed.getPropertyValue('--theme-color')||'').trim();
+        if(color) themeMeta.setAttribute('content',color);
+      }
+      if(persist){
+        saveThemePreference(normalized);
+      }
+    }
+
+    applyTheme(resolvePreferredTheme(),{persist:false});
 
     function setHomeTipDismissed(state){
       if(!storageSupported) return;
@@ -5339,6 +5444,13 @@
       });
     }
 
+    const toggleDarkMode=document.getElementById('toggleDarkMode');
+    if(toggleDarkMode){
+      toggleDarkMode.addEventListener('change',()=>{
+        applyTheme(toggleDarkMode.checked?'dark':'light',{persist:true});
+      });
+    }
+
     document.addEventListener('click',event=>{
       if(!settingsDrawerOpen) return;
       const panel=document.getElementById('savedWeeksPanel');
@@ -5864,6 +5976,7 @@
       const layout=getLayoutSettings();
       applyLayoutToDocument(layout);
       currentLayout=layout;
+      applyTheme(resolvePreferredTheme(),{persist:false});
       await fetchDeviceAppearancePreferences();
       const sectionToggles=document.querySelectorAll('.control-section');
       const weekSection=sectionToggles[0];

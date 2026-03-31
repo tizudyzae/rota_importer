@@ -443,26 +443,54 @@ def extract_employee_table(pdf_path: Path) -> tuple[List[str], List[List[str]]]:
     header_row: List[str] = []
     all_rows: List[List[str]] = []
 
+    def is_schedule_header(row: List[str]) -> bool:
+        normalized = [clean_cell(cell) for cell in row]
+        if not normalized:
+            return False
+
+        first_cell = normalized[0].lower()
+        if first_cell != "employee":
+            return False
+
+        day_columns = 0
+        for cell in normalized[1:]:
+            if DATE_HEADER_RE.match(cell):
+                day_columns += 1
+
+        return day_columns >= 2
+
     with pdfplumber.open(str(pdf_path)) as pdf:
         for page in pdf.pages:
             tables = page.extract_tables()
             if not tables:
                 continue
 
-            table = tables[0]
-            if not table or len(table) < 2:
-                continue
-
-            page_header = normalize_table_row(table[0], len(table[0]))
-            if not header_row:
-                header_row = page_header
-
-            expected_cols = len(header_row)
-
-            for row in table[1:]:
-                if not row or not any(clean_cell(cell) for cell in row):
+            for table in tables:
+                if not table or len(table) < 2:
                     continue
-                all_rows.append(normalize_table_row(row, expected_cols))
+
+                header_index = -1
+                page_header: List[str] = []
+                for idx, raw_row in enumerate(table):
+                    if not raw_row:
+                        continue
+                    candidate = normalize_table_row(raw_row, len(raw_row))
+                    if is_schedule_header(candidate):
+                        header_index = idx
+                        page_header = candidate
+                        break
+
+                if header_index == -1:
+                    continue
+
+                if not header_row:
+                    header_row = page_header
+
+                expected_cols = len(header_row)
+                for row in table[header_index + 1 :]:
+                    if not row or not any(clean_cell(cell) for cell in row):
+                        continue
+                    all_rows.append(normalize_table_row(row, expected_cols))
 
     return header_row, all_rows
 

@@ -1632,13 +1632,15 @@
 
     function pickRange(cell,{fallbackSCH}){
       if(!cell) return null;
-      // Prefer Whole Shift
-      let m=cell.match(/Whole\s*Shift:\s*(\d{1,2}):(\d{1,2})\s*-\s*(\d{1,2}):(\d{1,2})/i);
+      const normalized=String(cell||'').replace(/\s+/g,' ').trim();
+      let m=normalized.match(/(\d{1,2})\s*:\s*(\d{1,2})\s*[-–—]\s*(\d{1,2})\s*:\s*(\d{1,2})/i);
       if(!m && fallbackSCH){
-        m=cell.match(/SCH:\s*(\d{1,2}):(\d{1,2})\s*-\s*(\d{1,2}):(\d{1,2})/i);
+        m=normalized.match(/SCH:\s*(\d{1,2})\s*:\s*(\d{1,2})\s*[-–—]\s*(\d{1,2})\s*:\s*(\d{1,2})/i);
       }
       if(!m) return null;
       let s=toMin(m[1],m[2]), e=toMin(m[3],m[4]);
+      if(!Number.isFinite(s) || !Number.isFinite(e)) return null;
+      if(s===0 && e===1440) return null;
       if(e<s) e+=1440; // overnight
       return {start:s,end:e};
     }

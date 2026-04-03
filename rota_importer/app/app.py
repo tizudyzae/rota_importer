@@ -50,7 +50,8 @@ app = FastAPI(title="Rota PDF Importer")
 
 EMPLOYEE_ID_RE = re.compile(r"\((\d+)\)")
 DATE_HEADER_RE = re.compile(r"^([A-Za-z]{3})\((\d{2})/(\d{2})\)$")
-TIME_RANGE_RE = re.compile(r"(\d{2}:\d{2})\s*-\s*(\d{2}:\d{2})")
+TIME_RANGE_RE = re.compile(r"(?<!\d)([01]\d|2[0-4]):([0-5]\d)\s*[-–—]\s*([01]\d|2[0-4]):([0-5]\d)(?!\d)")
+OFF_KEYWORD_RE = re.compile(r"\boff\b", re.IGNORECASE)
 DAY_ORDER = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"]
 MANAGEMENT_NAMES = {"samantha", "elizabeth", "joshua", "laura", "nathan"}
 AUTO_NOTIFY_POLL_SECONDS = 60
@@ -516,31 +517,37 @@ def fix_orphan_id_row(rows: List[List[str]]) -> List[List[str]]:
     return fixed
 
 
-def parse_shift_cell(cell: str) -> tuple[str, str]:
-    cell = clean_cell(cell)
-    if not cell:
-        return "", ""
+def parse_shift_cell(raw_text: str) -> Optional[dict]:
+    raw_cell = "" if raw_text is None else str(raw_text)
+    normalized = clean_cell(raw_cell)
+    if not normalized:
+        return None
 
-    upper = cell.upper()
-    if upper.startswith("OFF"):
-        return "", ""
-
-    match = TIME_RANGE_RE.search(cell)
+    match = TIME_RANGE_RE.search(normalized)
     if not match:
-        return "", ""
+        return None
 
-    start_time, end_time = match.group(1), match.group(2)
-    if start_time == "00:00" and end_time == "24:00":
-        return "", ""
+    start_time = f"{match.group(1)}:{match.group(2)}"
+    end_time = f"{match.group(3)}:{match.group(4)}"
+    prefix = normalized[: match.start()].strip(" :-/|\t")
 
-    return start_time, end_time
+    is_off = OFF_KEYWORD_RE.search(normalized) is not None or (start_time == "00:00" and end_time == "24:00")
+
+    return {
+        "raw_cell": raw_cell,
+        "normalized_cell": normalized,
+        "start_time": "" if is_off else start_time,
+        "end_time": "" if is_off else end_time,
+        "is_off": is_off,
+        "shift_label": prefix or "",
+    }
 
 
 def format_shift_text(raw_cell: str, start_time: str, end_time: str) -> str:
     raw_clean = clean_cell(raw_cell)
     parsed_range = TIME_RANGE_RE.search(raw_clean)
     if parsed_range:
-        return f"{parsed_range.group(1)} - {parsed_range.group(2)}"
+        return f"{parsed_range.group(1)}:{parsed_range.group(2)} - {parsed_range.group(3)}:{parsed_range.group(4)}"
 
     start_clean = clean_cell(start_time)
     end_clean = clean_cell(end_time)
@@ -610,7 +617,7 @@ def parse_pdf_to_shift_rows(pdf_path: Path, original_filename: str) -> List[dict
             if day_key not in DAY_ORDER:
                 continue
 
-            start_time, end_time = parse_shift_cell(value)
+            parsed_cell = parse_shift_cell(value)
             shift_date = build_iso_date(year, month, day)
 
             shifts.append(
@@ -621,8 +628,8 @@ def parse_pdf_to_shift_rows(pdf_path: Path, original_filename: str) -> List[dict
                     "day_header": full_header,
                     "shift_date": shift_date,
                     "raw_cell": value,
-                    "start_time": start_time,
-                    "end_time": end_time,
+                    "start_time": parsed_cell["start_time"] if parsed_cell else "",
+                    "end_time": parsed_cell["end_time"] if parsed_cell else "",
                     "total_hours": total_hours,
                 }
             )
@@ -1958,7 +1965,7 @@ def build_notification_payload_from_settings() -> dict:
         if not re.fullmatch(r"\d{2}:\d{2}", start_time):
             parsed_range = TIME_RANGE_RE.search(clean_cell(rota_context.get("shift")))
             if parsed_range:
-                start_time = parsed_range.group(1)
+                start_time = f"{parsed_range.group(1)}:{parsed_range.group(2)}"
 
         if re.fullmatch(r"\d{2}:\d{2}", start_time):
             shift_start = parse_shift_datetime(today, start_time)
@@ -1993,7 +2000,7 @@ def build_notification_payload_from_settings() -> dict:
         if not re.fullmatch(r"\d{2}:\d{2}", end_time):
             parsed_range = TIME_RANGE_RE.search(clean_cell(rota_context.get("shift")))
             if parsed_range:
-                end_time = parsed_range.group(2)
+                end_time = f"{parsed_range.group(3)}:{parsed_range.group(4)}"
 
         if not re.fullmatch(r"\d{2}:\d{2}", end_time):
             continue

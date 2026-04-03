@@ -906,6 +906,25 @@
       return `${APP_BASE}${path}`;
     }
 
+    async function refreshSavedWeeksFromServer(){
+      const resp=await fetch(apiUrl('/api/viewer_sync'),{cache:'no-store'});
+      if(!resp.ok){
+        const text=await resp.text();
+        throw new Error(text || `Sync failed: ${resp.status}`);
+      }
+      const payload=await resp.json();
+      const records=Array.isArray(payload)?payload:[];
+      savedWeekRecords=records.map(entry=>{
+        const model=cloneStoredModel(entry && entry.model);
+        const meta=deriveWeekMetadata(model);
+        const storedAt=Number.isFinite(entry && entry.storedAt)?Number(entry.storedAt):Date.now();
+        const id=entry && typeof entry.id==='string'?entry.id:meta.id;
+        if(meta.id!==id) meta.id=id;
+        return {id,storedAt,metadata:meta,model};
+      }).filter(record=>record && record.id && record.model);
+      rebuildWeekCache();
+    }
+
     let appearanceSyncTimer=null;
 
     function formatShortWeekLabel(record){
@@ -2411,30 +2430,24 @@
         ? String(Math.trunc(record.metadata.uploadId))
         : '';
       const uploadId=(idMatch && idMatch[1]) || metadataUploadId;
-      if(uploadId){
-        try{
-          const resp=await fetch(apiUrl(`/api/upload/${uploadId}`),{method:'DELETE'});
-          if(!resp.ok){
-            const text=await resp.text();
-            throw new Error(text||`Delete failed: ${resp.status}`);
-          }
-        }catch(err){
-          console.error('Failed to delete saved week from server.',err);
-          alert(`Delete failed: ${err && err.message ? err.message : err}`);
-          return;
-        }
+      if(!uploadId){
+        alert('This saved week is not linked to a server upload id, so it cannot be deleted from the database.');
+        return;
       }
-      const index=savedWeekRecords.findIndex(record=>record.id===id);
-      if(index===-1) return;
-      savedWeekRecords.splice(index,1);
-      rebuildWeekCache();
-      const remaining=activeWeekIds.filter(item=>item!==id);
-      const remainingViewer=viewerWeekIds.filter(item=>item!==id);
-      setActiveWeeks(remaining,{persist:true});
-      setViewerWeeks(remainingViewer,{persist:true});
-      ensureActiveWeeks();
-      updateWeekSelectionUI();
-      renderViews();
+      try{
+        const resp=await fetch(apiUrl(`/api/upload/${uploadId}`),{method:'DELETE',cache:'no-store'});
+        if(!resp.ok){
+          const text=await resp.text();
+          throw new Error(text||`Delete failed: ${resp.status}`);
+        }
+        await refreshSavedWeeksFromServer();
+        ensureActiveWeeks();
+        updateWeekSelectionUI();
+        renderViews();
+      }catch(err){
+        console.error('Failed to delete saved week from server.',err);
+        alert(`Delete failed: ${err && err.message ? err.message : err}`);
+      }
     }
 
 

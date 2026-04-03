@@ -213,7 +213,7 @@
     .pdf-toolbar-hint{margin:0;font-size:13px;color:var(--muted);max-width:480px}
     .schedule-view{display:flex;flex-direction:column;gap:24px}
     .line-view{display:flex;flex-direction:column;gap:18px}
-    .line-controls{display:flex;flex-wrap:wrap;gap:14px;align-items:center}
+    .line-controls{display:flex;flex-wrap:wrap;gap:14px;align-items:center;justify-content:flex-start;width:100%}
     .line-day-picker{display:flex;align-items:center;gap:8px;flex-wrap:nowrap;max-width:100%}
     .line-day-pills{display:flex;align-items:center;gap:6px;flex-wrap:nowrap;overflow-x:auto;padding:2px}
     .line-day-pill,.line-day-nav{appearance:none;border-radius:999px;border:1px solid var(--border);background:var(--surface-soft);color:var(--muted);font-weight:700;font-size:12px;line-height:1;padding:8px 10px;min-height:32px;cursor:pointer;transition:background .2s ease,color .2s ease,border-color .2s ease,box-shadow .2s ease;flex:0 0 auto}
@@ -250,7 +250,7 @@
     .line-bar.thin{padding:0 12px}
     .line-bar-name{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);background:var(--line-bar-name-bg);color:var(--ink);padding:4px 10px;border-radius:999px;font-size:13px;font-weight:700;white-space:nowrap;box-shadow:0 8px 16px rgba(9,42,58,.12)}
     .line-bar.thin .line-bar-name{display:none}
-    .line-bar-time{position:absolute;top:50%;transform:translateY(-50%);font-size:12px;font-weight:700;color:#fff;padding:3px 8px;border-radius:12px;white-space:nowrap;--line-time-shift:0px;z-index:2;pointer-events:none}
+    .line-bar-time{position:absolute;top:50%;transform:translateY(-50%);font-size:12px;font-weight:700;color:#fff;padding:3px 8px;border-radius:12px;white-space:nowrap;--line-time-shift:0px;z-index:2;pointer-events:auto;cursor:zoom-in}
     .line-bar-time.start{left:-10px;transform:translate(calc(-100% + var(--line-time-shift,0px)),-50%);background:#059669}
     .line-bar-time.end{right:-10px;transform:translate(calc(100% - var(--line-time-shift,0px)),-50%);background:#dc2626}
     .line-bar-time.clipped{opacity:1}
@@ -447,14 +447,6 @@
     <div id="appearanceControls" class="appearance-controls" hidden aria-hidden="true" role="group"></div>
   </div>
   <div class="wrap">
-
-    <div class="mobile-hint" id="mobileHint" aria-live="polite">
-      <div class="mobile-hint-text">
-        <strong>Quick tip:</strong>
-        <span>Add this page to your home screen for an app-like experience. All controls stay within thumb reach and the reports stay untouched.</span>
-      </div>
-      <button class="mobile-hint-close" id="btnDismissHint" type="button" aria-label="Dismiss quick tip">×</button>
-    </div>
 
     <div class="layout">
       <aside class="side-panel">
@@ -2140,6 +2132,17 @@
       return bStored-aStored;
     }
 
+    function compareWeekRecordsChronological(a,b){
+      const aDate=a && a.metadata && typeof a.metadata.startIso==='string'?a.metadata.startIso:'';
+      const bDate=b && b.metadata && typeof b.metadata.startIso==='string'?b.metadata.startIso:'';
+      if(aDate && bDate && aDate!==bDate){
+        return aDate<bDate?-1:1;
+      }
+      const aStored=Number.isFinite(a && a.storedAt)?a.storedAt:0;
+      const bStored=Number.isFinite(b && b.storedAt)?b.storedAt:0;
+      return aStored-bStored;
+    }
+
     function trimWeekRecords(records){
       const list=records.slice().sort(compareWeekRecords);
       while(list.length>MAX_STORED_WEEKS){
@@ -2306,7 +2309,7 @@
       const meta=document.getElementById('savedWeekMeta');
       const settingsMeta=document.getElementById('settingsWeekMeta');
       const settingsWeekList=document.getElementById('settingsWeekList');
-      const records=getSortedWeekRecords();
+      const records=getSortedWeekRecords().slice().sort(compareWeekRecordsChronological);
       const hasRecords=records.length>0;
       const activeSet=new Set(activeWeekIds);
       if(hasRecords && !activeWeekIds.length){
@@ -2883,6 +2886,17 @@
       drawCurrentLineChart();
     }
 
+    function zoomLineViewToHour(minute){
+      if(!Number.isFinite(minute)) return;
+      const clampedMinute=Math.max(0,Math.min(1439,minute));
+      const hourStart=Math.floor(clampedMinute/60)*60;
+      const windowMinutes=clampLineViewWindow(60);
+      lineViewState.windowMinutes=windowMinutes;
+      lineViewState.startMinute=clampLineViewStart(hourStart,windowMinutes);
+      lineViewBaseMinutesPerPixel=null;
+      drawCurrentLineChart();
+    }
+
     function updateLinePresetActiveState(){
       if(!Array.isArray(linePresetButtonList) || !linePresetButtonList.length) return;
       linePresetButtonList.forEach(btn=>{
@@ -3347,6 +3361,9 @@
             const startLabel=document.createElement('span');
             startLabel.className='line-bar-time start';
             startLabel.textContent=fmtHMDisplay(segment.segStart);
+            startLabel.dataset.minute=String(Math.floor(segment.segStart));
+            startLabel.setAttribute('role','button');
+            startLabel.setAttribute('aria-label',`Zoom to ${fmtHMDisplay(Math.floor(segment.segStart/60)*60)} hour`);
             if(segment.segStart<start) startLabel.classList.add('clipped');
             bar.appendChild(startLabel);
             const nameEl=document.createElement('span');
@@ -3356,6 +3373,9 @@
             const endLabel=document.createElement('span');
             endLabel.className='line-bar-time end';
             endLabel.textContent=fmtHMDisplay(segment.segEnd);
+            endLabel.dataset.minute=String(Math.floor(segment.segEnd));
+            endLabel.setAttribute('role','button');
+            endLabel.setAttribute('aria-label',`Zoom to ${fmtHMDisplay(Math.floor(segment.segEnd/60)*60)} hour`);
             if(segment.segEnd>end) endLabel.classList.add('clipped');
             bar.appendChild(endLabel);
             barsNeedingAdjustment.push({bar,startLabel,endLabel,nameEl});
@@ -4965,24 +4985,22 @@
     }
 
     function buildPdfPalette(layout){
-      const computed=getComputedStyle(document.documentElement);
-      const inkRaw=(computed.getPropertyValue('--ink')||'#111111').trim()||'#111111';
-      const mutedRaw=(computed.getPropertyValue('--muted')||'#555555').trim()||'#555555';
       const getColor=(value,def)=>parseCssColor(value)||parseCssColor(def)||{r:0,g:0,b:0};
+      const solidBlack=getColor('#000000','#000000');
       return {
-        ink:getColor(inkRaw,'#111111'),
-        muted:getColor(mutedRaw,'#555555'),
+        ink:solidBlack,
+        muted:solidBlack,
         sheetBackground:getColor(layout.sheetBackground,DEFAULT_LAYOUT.sheetBackground),
         sheetBorder:getColor(layout.sheetBorder,DEFAULT_LAYOUT.sheetBorder),
         headerBand:getColor(layout.headerBandColor,DEFAULT_LAYOUT.headerBandColor),
         grid:getColor(layout.gridColor,DEFAULT_LAYOUT.gridColor),
         minorGrid:getColor(layout.minorGridColor,DEFAULT_LAYOUT.minorGridColor),
-        axis:getColor(layout.axisColor,DEFAULT_LAYOUT.axisColor),
-        columnHeader:getColor(layout.columnHeaderColor,layout.axisColor||DEFAULT_LAYOUT.columnHeaderColor),
-        rowLabel:getColor(layout.rowLabelColor,DEFAULT_LAYOUT.rowLabelColor),
+        axis:solidBlack,
+        columnHeader:solidBlack,
+        rowLabel:solidBlack,
         specialBar:getColor(SPECIAL_NAME_COLOR,DEFAULT_LAYOUT.barColor),
         bar:getColor(layout.barColor,DEFAULT_LAYOUT.barColor),
-        barLabel:getColor(layout.barLabelColor,DEFAULT_LAYOUT.barLabelColor),
+        barLabel:solidBlack,
       };
     }
 
@@ -5660,6 +5678,17 @@
       });
     }
 
+    if(lineChartRows){
+      lineChartRows.addEventListener('click',event=>{
+        const target=event.target instanceof Element?event.target.closest('.line-bar-time[data-minute]'):null;
+        if(!target) return;
+        const minute=parseInt(target.getAttribute('data-minute')||'',10);
+        if(Number.isFinite(minute)){
+          zoomLineViewToHour(minute);
+        }
+      });
+    }
+
     let lineViewDrag=null;
     const lineViewPointers=new Map();
     let lineViewPinch=null;
@@ -5667,16 +5696,7 @@
     let lineViewCarryAcrossWeekChange=false;
 
     function getChronologicalWeekRecords(){
-      return getSortedWeekRecords().slice().sort((a,b)=>{
-        const aStart=(a && a.metadata && typeof a.metadata.startIso==='string')?a.metadata.startIso:'';
-        const bStart=(b && b.metadata && typeof b.metadata.startIso==='string')?b.metadata.startIso:'';
-        if(aStart && bStart && aStart!==bStart){
-          return aStart<bStart?-1:1;
-        }
-        const aStored=Number.isFinite(a && a.storedAt)?a.storedAt:0;
-        const bStored=Number.isFinite(b && b.storedAt)?b.storedAt:0;
-        return aStored-bStored;
-      });
+      return getSortedWeekRecords().slice().sort(compareWeekRecordsChronological);
     }
 
     function getWeekDayCountById(weekId){
@@ -5770,6 +5790,8 @@
       if(event.button!==0) return;
       if(!lineChartShell || lineChartShell.hidden) return;
       const element=event.target instanceof Element?event.target:null;
+      const timeLabel=element?element.closest('.line-bar-time'):null;
+      if(timeLabel) return;
       const inTrack=element?element.closest('.line-row-track'):null;
       const inAxis=element && lineChartAxis?lineChartAxis.contains(element):false;
       const inScrollEdge=element && (element.closest('#lineChartScrollEdgeLeft') || element.closest('#lineChartScrollEdgeRight'));

@@ -3028,6 +3028,28 @@ async def api_upload_pdf(file: UploadFile = File(...)):
         shutil.copyfileobj(file.file, f)
 
     shifts = parse_pdf_to_shift_rows(target_path, file.filename)
+    non_empty_cells = 0
+    parsed_cells = 0
+    off_cells = 0
+    for shift in shifts:
+        raw_cell = clean_cell(shift.get("raw_cell", ""))
+        if not raw_cell:
+            continue
+        non_empty_cells += 1
+        parsed = parse_shift_cell(raw_cell)
+        if parsed:
+            parsed_cells += 1
+            if parsed.get("is_off"):
+                off_cells += 1
+
+    print(
+        "[upload_pdf] "
+        f"filename={file.filename} "
+        f"shift_rows={len(shifts)} "
+        f"non_empty_cells={non_empty_cells} "
+        f"parsed_cells={parsed_cells} "
+        f"off_cells={off_cells}"
+    )
 
     with get_conn() as conn:
         existing_uploads = conn.execute(
@@ -3075,6 +3097,9 @@ async def api_upload_pdf(file: UploadFile = File(...)):
             "viewer_id": f"upload-{upload_id}",
             "original_filename": file.filename,
             "row_count": len(shifts),
+            "non_empty_cells": non_empty_cells,
+            "parsed_cells": parsed_cells,
+            "off_cells": off_cells,
         }
     )
 

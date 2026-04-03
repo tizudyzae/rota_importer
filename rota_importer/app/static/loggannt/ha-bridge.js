@@ -261,6 +261,12 @@
         }
 
         const data = await resp.json();
+        console.log("[RotaUpload] upload response", data);
+        if (Number(data.row_count || 0) === 0) {
+          alert(
+            "Upload completed but produced 0 parsed rows. Please share the upload response from browser console so parsing can be tuned."
+          );
+        }
         await syncViewerState(data.viewer_id);
         sessionStorage.setItem(RELOAD_FLAG, "1");
         window.location.reload();

@@ -96,3 +96,33 @@ def test_parse_pdf_to_shift_rows_handles_old_and_new_off_and_working_cells(monke
     assert by_day["tue"]["end_time"] == "23:00"
     assert by_day["wed"]["start_time"] == ""
     assert by_day["wed"]["end_time"] == ""
+
+
+def test_parse_pdf_to_shift_rows_regression_plain_times_mixed_formats_and_unparseable_logged(
+    monkeypatch, tmp_path, caplog
+):
+    monkeypatch.setattr(
+        app_module,
+        "extract_employee_table",
+        lambda _path: (
+            ["Employee", "Sun(04/12)", "Mon(04/13)", "Tue(04/14)", "Wed(04/15)", "Total Hours"],
+            [["Doe, Jane (123456)", "06:00 - 14:30", "00:00 - 24:00", "Whole Shift: 08:00 - 16:00", "training", "16.0"]],
+        ),
+    )
+
+    caplog.set_level("INFO")
+    shifts = app_module.parse_pdf_to_shift_rows(tmp_path / "sample.pdf", "schedule_2026.pdf")
+    by_day = {shift["day_name"]: shift for shift in shifts}
+
+    assert by_day["sun"]["start_time"] == "06:00"
+    assert by_day["sun"]["end_time"] == "14:30"
+    assert by_day["mon"]["start_time"] == ""
+    assert by_day["mon"]["end_time"] == ""
+    assert by_day["tue"]["start_time"] == "08:00"
+    assert by_day["tue"]["end_time"] == "16:00"
+    assert by_day["wed"]["start_time"] == ""
+    assert by_day["wed"]["end_time"] == ""
+    assert by_day["wed"]["raw_cell"] == "training"
+
+    warning_messages = [record.message for record in caplog.records if record.levelname == "WARNING"]
+    assert any("failed to parse" in message and "training" in message for message in warning_messages)

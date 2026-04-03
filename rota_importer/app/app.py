@@ -50,7 +50,9 @@ app = FastAPI(title="Rota PDF Importer")
 
 EMPLOYEE_ID_RE = re.compile(r"\((\d+)\)")
 DATE_HEADER_RE = re.compile(r"^([A-Za-z]{3})\((\d{2})/(\d{2})\)$")
-TIME_RANGE_RE = re.compile(r"(?<!\d)([01]\d|2[0-4]):([0-5]\d)\s*[-–—]\s*([01]\d|2[0-4]):([0-5]\d)(?!\d)")
+TIME_RANGE_RE = re.compile(
+    r"(?<!\d)([01]\d|2[0-4])\s*:\s*([0-5]\d)\s*[-–—]\s*([01]\d|2[0-4])\s*:\s*([0-5]\d)(?!\d)"
+)
 OFF_KEYWORD_RE = re.compile(r"\boff\b", re.IGNORECASE)
 DAY_ORDER = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"]
 MANAGEMENT_NAMES = {"samantha", "elizabeth", "joshua", "laura", "nathan"}
@@ -481,17 +483,30 @@ def extract_employee_table(pdf_path: Path) -> tuple[List[str], List[List[str]]]:
                         page_header = candidate
                         break
 
-                if header_index == -1:
+                if header_index == -1 and not header_row:
                     continue
 
-                if not header_row:
+                if header_index != -1 and not header_row:
                     header_row = page_header
 
+                if not header_row:
+                    continue
+
                 expected_cols = len(header_row)
-                for row in table[header_index + 1 :]:
+
+                def normalize_data_row(row: List[str]) -> List[str]:
+                    cleaned = [clean_cell(x) for x in row]
+                    if len(cleaned) < expected_cols:
+                        cleaned += [""] * (expected_cols - len(cleaned))
+                    elif len(cleaned) > expected_cols:
+                        cleaned = cleaned[: expected_cols - 1] + [" ".join(cleaned[expected_cols - 1 :]).strip()]
+                    return cleaned
+
+                data_rows = table[header_index + 1 :] if header_index != -1 else table
+                for row in data_rows:
                     if not row or not any(clean_cell(cell) for cell in row):
                         continue
-                    all_rows.append(normalize_table_row(row, expected_cols))
+                    all_rows.append(normalize_data_row(row))
 
     return header_row, all_rows
 
@@ -585,8 +600,15 @@ def build_iso_date(year: str, month: str, day: str) -> str:
 
 
 def parse_pdf_to_shift_rows(pdf_path: Path, original_filename: str) -> List[dict]:
+    _LOGGER.info("Parsing uploaded PDF: %s", original_filename)
     header_row, table_rows = extract_employee_table(pdf_path)
+    _LOGGER.info(
+        "Extracted employee table rows: %d (header columns: %d)",
+        len(table_rows),
+        len(header_row),
+    )
     if not header_row or not table_rows:
+        _LOGGER.warning("No header or rows extracted from %s", original_filename)
         return []
 
     table_rows = fix_orphan_id_row(table_rows)
@@ -594,6 +616,7 @@ def parse_pdf_to_shift_rows(pdf_path: Path, original_filename: str) -> List[dict
     year = infer_year_from_filename(original_filename)
 
     shifts: List[dict] = []
+    parse_fail_examples: List[dict] = []
 
     for idx, row in enumerate(table_rows, start=1):
         employee = normalize_employee_name(row[0])
@@ -617,8 +640,20 @@ def parse_pdf_to_shift_rows(pdf_path: Path, original_filename: str) -> List[dict
             if day_key not in DAY_ORDER:
                 continue
 
-            parsed_cell = parse_shift_cell(value)
+            raw_value = row[col_idx] if col_idx < len(row) else ""
+            parsed_cell = parse_shift_cell(raw_value)
             shift_date = build_iso_date(year, month, day)
+            raw_cell = "" if raw_value is None else str(raw_value)
+
+            if clean_cell(raw_cell) and not parsed_cell:
+                parse_fail_examples.append(
+                    {
+                        "row_index": idx,
+                        "employee": employee,
+                        "day_name": day_key,
+                        "raw_cell": raw_cell,
+                    }
+                )
 
             shifts.append(
                 {
@@ -627,7 +662,7 @@ def parse_pdf_to_shift_rows(pdf_path: Path, original_filename: str) -> List[dict
                     "day_name": day_key,
                     "day_header": full_header,
                     "shift_date": shift_date,
-                    "raw_cell": value,
+                    "raw_cell": raw_cell,
                     "start_time": parsed_cell["start_time"] if parsed_cell else "",
                     "end_time": parsed_cell["end_time"] if parsed_cell else "",
                     "total_hours": total_hours,
@@ -638,6 +673,15 @@ def parse_pdf_to_shift_rows(pdf_path: Path, original_filename: str) -> List[dict
             for shift in shifts:
                 if shift["row_index"] == idx and shift["employee"] == employee:
                     shift["total_hours"] = total_hours
+
+    if parse_fail_examples:
+        _LOGGER.warning(
+            "Non-empty shift cells failed to parse for %s: %d examples=%s",
+            original_filename,
+            len(parse_fail_examples),
+            parse_fail_examples[:5],
+        )
+    _LOGGER.info("Produced shift rows: %d for %s", len(shifts), original_filename)
 
     return shifts
 

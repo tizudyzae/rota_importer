@@ -71,6 +71,7 @@ def test_parse_pdf_to_shift_rows_uses_detected_header(monkeypatch, tmp_path):
     sunday = next((shift for shift in shifts if shift["day_name"] == "sun"), None)
     assert sunday is not None
     assert sunday["employee"] == "Jane"
+    assert sunday["employee_id"] == "123456"
     assert sunday["start_time"] == "06:00"
     assert sunday["end_time"] == "14:30"
 

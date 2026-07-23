@@ -49,6 +49,7 @@ HA_CORE_API_BASE = "http://supervisor/core/api"
 app = FastAPI(title="Rota PDF Importer")
 
 EMPLOYEE_ID_RE = re.compile(r"\((\d+)\)")
+MY_WAGE_EMPLOYEE_ID = "215149"
 DATE_HEADER_RE = re.compile(r"^([A-Za-z]{3})\((\d{2})/(\d{2})\)$")
 TIME_RANGE_RE = re.compile(
     r"(?<!\d)([01]\d|2[0-4])\s*:\s*([0-5]\d)\s*[-–—]\s*([01]\d|2[0-4])\s*:\s*([0-5]\d)(?!\d)"
@@ -217,6 +218,7 @@ def init_db() -> None:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 upload_id INTEGER NOT NULL,
                 employee TEXT NOT NULL,
+                employee_id TEXT,
                 day_name TEXT NOT NULL,
                 day_header TEXT NOT NULL,
                 shift_date TEXT,
@@ -228,6 +230,30 @@ def init_db() -> None:
                 FOREIGN KEY(upload_id) REFERENCES uploads(id)
             )
             """
+        )
+
+        shift_columns = {
+            row["name"] for row in conn.execute("PRAGMA table_info(shifts)").fetchall()
+        }
+        if "employee_id" not in shift_columns:
+            conn.execute("ALTER TABLE shifts ADD COLUMN employee_id TEXT")
+
+        # Older schemas retained the employee number only when it was still part
+        # of the employee text. Recover those values without discarding rows
+        # whose number is no longer available.
+        shifts_to_backfill = conn.execute(
+            "SELECT id, employee FROM shifts WHERE employee_id IS NULL OR employee_id = ''"
+        ).fetchall()
+        for shift in shifts_to_backfill:
+            employee_id_match = EMPLOYEE_ID_RE.search(clean_cell(shift["employee"]))
+            if employee_id_match:
+                conn.execute(
+                    "UPDATE shifts SET employee_id = ? WHERE id = ?",
+                    (employee_id_match.group(1), shift["id"]),
+                )
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_shifts_employee_id_date "
+            "ON shifts(employee_id, shift_date, start_time)"
         )
         conn.execute(
             """
@@ -619,6 +645,8 @@ def parse_pdf_to_shift_rows(pdf_path: Path, original_filename: str) -> List[dict
     parse_fail_examples: List[dict] = []
 
     for idx, row in enumerate(table_rows, start=1):
+        employee_id_match = EMPLOYEE_ID_RE.search(clean_cell(row[0]))
+        employee_id = employee_id_match.group(1) if employee_id_match else None
         employee = normalize_employee_name(row[0])
         if not employee or employee.lower() == "employee":
             continue
@@ -659,6 +687,7 @@ def parse_pdf_to_shift_rows(pdf_path: Path, original_filename: str) -> List[dict
                 {
                     "row_index": idx,
                     "employee": employee,
+                    "employee_id": employee_id,
                     "day_name": day_key,
                     "day_header": full_header,
                     "shift_date": shift_date,
@@ -2452,6 +2481,47 @@ def api_uploads():
     return JSONResponse([dict(row) for row in uploads])
 
 
+def parse_wage_api_date(value: str, parameter_name: str):
+    try:
+        parsed = datetime.strptime(value, "%Y-%m-%d").date()
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=400, detail=f"{parameter_name} must be a valid ISO date (YYYY-MM-DD)"
+        ) from exc
+    if parsed.isoformat() != value:
+        raise HTTPException(
+            status_code=400, detail=f"{parameter_name} must be a valid ISO date (YYYY-MM-DD)"
+        )
+    return parsed
+
+
+@app.get("/api/my-wage-shifts")
+def api_my_wage_shifts(start_date: str, end_date: str):
+    start = parse_wage_api_date(start_date, "start_date")
+    end = parse_wage_api_date(end_date, "end_date")
+    if end < start:
+        raise HTTPException(status_code=400, detail="end_date must not be before start_date")
+    if (end - start).days >= 42:
+        raise HTTPException(status_code=400, detail="date range must not exceed 42 days")
+
+    with get_conn() as conn:
+        rows = conn.execute(
+            """
+            SELECT id AS shift_id, shift_date, day_name, start_time, end_time,
+                   raw_cell, total_hours
+            FROM shifts
+            WHERE employee_id = ?
+              AND shift_date BETWEEN ? AND ?
+              AND TRIM(COALESCE(start_time, '')) != ''
+              AND TRIM(COALESCE(end_time, '')) != ''
+            ORDER BY shift_date, start_time, id
+            """,
+            (MY_WAGE_EMPLOYEE_ID, start_date, end_date),
+        ).fetchall()
+
+    return JSONResponse([dict(row) for row in rows])
+
+
 @app.get("/api/upload/{upload_id}/model")
 def api_upload_model(upload_id: int):
     return JSONResponse(build_model_from_upload(upload_id))
@@ -3071,13 +3141,14 @@ async def api_upload_pdf(file: UploadFile = File(...)):
             conn.execute(
                 """
                 INSERT INTO shifts (
-                    upload_id, employee, day_name, day_header, shift_date,
+                    upload_id, employee, employee_id, day_name, day_header, shift_date,
                     raw_cell, start_time, end_time, total_hours, row_index
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     upload_id,
                     shift["employee"],
+                    shift["employee_id"],
                     shift["day_name"],
                     shift["day_header"],
                     shift["shift_date"],

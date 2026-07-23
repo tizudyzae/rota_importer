@@ -1,5 +1,8 @@
 fastapi
-uvicorn[standard]
+# The add-on only uses Uvicorn's built-in HTTP implementation. Avoid the
+# optional native "standard" extras, which are not available on every Home
+# Assistant architecture supported by config.yaml (notably 32-bit targets).
+uvicorn
 jinja2
 python-multipart
 pdfplumber

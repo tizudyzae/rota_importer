@@ -1,4 +1,4 @@
-ARG BUILD_FROM
+ARG BUILD_FROM=ghcr.io/home-assistant/amd64-base:latest
 FROM $BUILD_FROM
 
 ENV LANG=C.UTF-8
@@ -28,6 +28,8 @@ COPY run.sh /run.sh
 COPY app /app
 COPY ha_bridge_component /app/ha_bridge_component
 
-RUN chmod a+x /run.sh
+RUN chmod a+x /run.sh \
+    && python -m compileall -q /app \
+    && python -c "import app"
 
 CMD [ "/run.sh" ]

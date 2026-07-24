@@ -243,6 +243,8 @@
     .line-preset-btn.active{background:var(--accent);color:#fff;border-color:var(--accent);box-shadow:0 10px 20px rgba(0,123,195,.18)}
     .line-chart-shell{position:relative;border:1px solid var(--border);border-radius:24px;background:var(--surface);box-shadow:0 18px 36px rgba(7,45,65,.08);padding:24px;display:flex;flex-direction:column;gap:18px;--line-axis-height:36px;--line-track-gap:12px;touch-action:pan-y pinch-zoom}
     .line-chart-shell[hidden]{display:none !important}
+    .line-add-shift{position:absolute;right:18px;bottom:18px;z-index:5;width:52px;height:52px;padding:0;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:30px;font-weight:400;line-height:1;box-shadow:0 14px 28px rgba(0,148,140,.32)}
+    .line-add-shift:hover{box-shadow:0 16px 32px rgba(0,148,140,.4)}
     .line-chart-scroll-edge{position:absolute;top:0;bottom:0;width:14px;z-index:3;touch-action:pan-y;background:transparent}
     .line-chart-scroll-edge.left{left:0}
     .line-chart-scroll-edge.right{right:0}
@@ -473,7 +475,6 @@
                 <div class="saved-week-pills" id="savedWeekPills" role="group" aria-label="Select week" aria-disabled="true"></div>
               </label>
               <p class="saved-week-meta" id="savedWeekMeta" hidden></p>
-              <button class="btn btn-secondary" id="btnAddShift" type="button" disabled>Add shift</button>
             </div>
           </details>
           <details class="control-section">
@@ -529,6 +530,7 @@
                 <div class="line-chart-scroll-edge right" id="lineChartScrollEdgeRight" aria-hidden="true"></div>
                 <div class="line-chart-axis" id="lineChartAxis"></div>
                 <div class="line-chart-rows" id="lineChartRows"></div>
+                <button class="btn btn-secondary line-add-shift" id="btnAddShift" type="button" aria-label="Add shift" title="Add shift" disabled>+</button>
               </div>
               <p class="control-hint line-window-hint" id="lineWindowHint">Pinch to zoom the visible hours and drag the timeline to pan.</p>
               <div class="line-chart-warnings" id="lineChartWarnings" role="status" aria-live="polite" hidden></div>
@@ -559,9 +561,6 @@
         <label class="manual-shift-field wide">Colleague
           <input id="manualShiftEmployee" name="employee" list="manualShiftColleagues" maxlength="200" autocomplete="off" required>
           <datalist id="manualShiftColleagues"></datalist>
-        </label>
-        <label class="manual-shift-field wide">Colleague ID
-          <input id="manualShiftEmployeeId" name="employee_id" maxlength="50" inputmode="numeric" required>
         </label>
         <label class="manual-shift-field wide">Date
           <input id="manualShiftDate" name="shift_date" type="date" required>
@@ -5548,6 +5547,9 @@
           colleagues.appendChild(option);
         }
       });
+      const employeeInput=document.getElementById('manualShiftEmployee');
+      const defaultColleague=Array.from(colleagues.options).find(option=>option.value.toLowerCase()==='nathan udohaya');
+      employeeInput.value=defaultColleague?defaultColleague.value:'';
       const metadata=selected.record && selected.record.metadata;
       const dateInput=document.getElementById('manualShiftDate');
       dateInput.min=metadata && metadata.startIso?metadata.startIso:'';
@@ -5555,7 +5557,7 @@
       dateInput.value=dateInput.min||'';
       document.getElementById('manualShiftWeek').textContent=`Add a working shift to ${formatWeekMeta(selected.record)||'the selected week'}.`;
       manualShiftDialog.showModal();
-      document.getElementById('manualShiftEmployee').focus();
+      employeeInput.focus();
     }
 
     if(btnAddShift) btnAddShift.addEventListener('click',openManualShiftDialog);

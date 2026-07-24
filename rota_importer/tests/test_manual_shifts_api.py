@@ -57,6 +57,44 @@ def test_add_manual_shift_persists_pdf_equivalent_fields(tmp_path):
     assert row["total_hours"] == "8.5"
 
 
+def test_add_manual_shift_does_not_require_employee_id(tmp_path):
+    client, upload_id = _client_with_week(tmp_path)
+
+    response = client.post(
+        f"/api/upload/{upload_id}/shifts",
+        json={
+            "employee": "New colleague",
+            "shift_date": "2026-07-22",
+            "start_time": "09:00",
+            "end_time": "17:00",
+        },
+    )
+
+    assert response.status_code == 201
+    with app_module.get_conn() as conn:
+        row = conn.execute("SELECT employee_id FROM shifts WHERE id = ?", (response.json()["shift_id"],)).fetchone()
+    assert row["employee_id"] is None
+
+
+def test_add_manual_shift_uses_selected_colleagues_existing_employee_id(tmp_path):
+    client, upload_id = _client_with_week(tmp_path)
+
+    response = client.post(
+        f"/api/upload/{upload_id}/shifts",
+        json={
+            "employee": "Existing",
+            "shift_date": "2026-07-22",
+            "start_time": "09:00",
+            "end_time": "17:00",
+        },
+    )
+
+    assert response.status_code == 201
+    with app_module.get_conn() as conn:
+        row = conn.execute("SELECT employee_id FROM shifts WHERE id = ?", (response.json()["shift_id"],)).fetchone()
+    assert row["employee_id"] == "100"
+
+
 def test_add_manual_shift_rejects_dates_outside_selected_week_and_duplicates(tmp_path):
     client, upload_id = _client_with_week(tmp_path)
     payload = {

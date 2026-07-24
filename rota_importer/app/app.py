@@ -2544,8 +2544,6 @@ async def api_add_manual_shift(upload_id: int, request: Request):
     end_time = sanitize_text(body.get("end_time"), max_len=5)
     if not employee:
         raise HTTPException(status_code=400, detail="Colleague is required")
-    if not employee_id:
-        raise HTTPException(status_code=400, detail="Colleague ID is required")
 
     shift_date = parse_wage_api_date(shift_date_text, "shift_date")
     if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", start_time):
@@ -2567,6 +2565,15 @@ async def api_add_manual_shift(upload_id: int, request: Request):
         upload = conn.execute("SELECT id FROM uploads WHERE id = ?", (upload_id,)).fetchone()
         if upload is None:
             raise HTTPException(status_code=404, detail="Selected week was not found")
+
+        if not employee_id:
+            employee_record = conn.execute(
+                "SELECT employee_id FROM shifts WHERE upload_id = ? "
+                "AND LOWER(TRIM(employee)) = LOWER(TRIM(?)) "
+                "AND TRIM(COALESCE(employee_id, '')) != '' ORDER BY id LIMIT 1",
+                (upload_id, employee),
+            ).fetchone()
+            employee_id = employee_record["employee_id"] if employee_record else None
 
         bounds = conn.execute(
             "SELECT MIN(shift_date) AS first_date, MAX(shift_date) AS last_date "

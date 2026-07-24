@@ -137,6 +137,18 @@
     .saved-week-meta{font-size:12px;color:var(--muted);margin:0}
     .saved-week-actions{display:flex;flex-wrap:wrap;gap:8px}
     .saved-week-actions .btn{flex:1 1 auto}
+    .manual-shift-dialog{width:min(520px,calc(100% - 32px));border:0;border-radius:22px;padding:0;background:var(--surface);color:var(--ink);box-shadow:0 24px 70px rgba(7,45,65,.3)}
+    .manual-shift-dialog::backdrop{background:rgba(4,25,36,.58);backdrop-filter:blur(2px)}
+    .manual-shift-form{padding:24px;display:flex;flex-direction:column;gap:16px}
+    .manual-shift-form h2{margin:0;color:var(--ink)}
+    .manual-shift-form p{margin:0;color:var(--muted);font-size:13px}
+    .manual-shift-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+    .manual-shift-field{display:flex;flex-direction:column;gap:6px;font-size:13px;font-weight:700;color:var(--ink)}
+    .manual-shift-field.wide{grid-column:1/-1}
+    .manual-shift-field input{box-sizing:border-box;width:100%;border:1px solid var(--border);border-radius:10px;padding:10px 12px;background:var(--surface-soft);color:var(--ink);font:inherit}
+    .manual-shift-field input:focus{outline:3px solid var(--focus);border-color:var(--accent)}
+    .manual-shift-error{color:#b42318!important;font-weight:700;min-height:16px}
+    .manual-shift-actions{display:flex;justify-content:flex-end;gap:10px}
 
     .settings-week-list{display:flex;flex-direction:column;gap:8px}
     .settings-week-empty{margin:0;font-size:13px;color:var(--muted);padding:10px 0}
@@ -419,6 +431,8 @@
       .selection-actions{justify-content:center}
       .report-scope-pills{justify-content:center}
       .line-presets{justify-content:center}
+      .manual-shift-grid{grid-template-columns:1fr}
+      .manual-shift-field.wide{grid-column:auto}
     }
   </style>
 </head>
@@ -459,6 +473,7 @@
                 <div class="saved-week-pills" id="savedWeekPills" role="group" aria-label="Select week" aria-disabled="true"></div>
               </label>
               <p class="saved-week-meta" id="savedWeekMeta" hidden></p>
+              <button class="btn btn-secondary" id="btnAddShift" type="button" disabled>Add shift</button>
             </div>
           </details>
           <details class="control-section">
@@ -536,6 +551,35 @@
     <textarea id="input" hidden></textarea>
     <select id="savedWeekSelect" hidden disabled></select>
   </div>
+  <dialog class="manual-shift-dialog" id="manualShiftDialog" aria-labelledby="manualShiftTitle">
+    <form class="manual-shift-form" id="manualShiftForm">
+      <h2 id="manualShiftTitle">Add a shift</h2>
+      <p id="manualShiftWeek">Add a working shift to the selected week.</p>
+      <div class="manual-shift-grid">
+        <label class="manual-shift-field wide">Colleague
+          <input id="manualShiftEmployee" name="employee" list="manualShiftColleagues" maxlength="200" autocomplete="off" required>
+          <datalist id="manualShiftColleagues"></datalist>
+        </label>
+        <label class="manual-shift-field wide">Colleague ID
+          <input id="manualShiftEmployeeId" name="employee_id" maxlength="50" inputmode="numeric" required>
+        </label>
+        <label class="manual-shift-field wide">Date
+          <input id="manualShiftDate" name="shift_date" type="date" required>
+        </label>
+        <label class="manual-shift-field">Start
+          <input id="manualShiftStart" name="start_time" type="time" required>
+        </label>
+        <label class="manual-shift-field">Finish
+          <input id="manualShiftEnd" name="end_time" type="time" required>
+        </label>
+      </div>
+      <p class="manual-shift-error" id="manualShiftError" role="alert" aria-live="polite"></p>
+      <div class="manual-shift-actions">
+        <button class="btn btn-secondary" id="btnCancelShift" type="button">Cancel</button>
+        <button class="btn" id="btnSaveShift" type="submit">Add shift</button>
+      </div>
+    </form>
+  </dialog>
 
   <script type="module">
     const appBase=(window.__APP_BASE__||'').replace(/\/$/,'');
@@ -2309,6 +2353,7 @@
       const meta=document.getElementById('savedWeekMeta');
       const settingsMeta=document.getElementById('settingsWeekMeta');
       const settingsWeekList=document.getElementById('settingsWeekList');
+      const addShiftButton=document.getElementById('btnAddShift');
       const records=getSortedWeekRecords().slice().sort(compareWeekRecordsChronological);
       const hasRecords=records.length>0;
       const activeSet=new Set(activeWeekIds);
@@ -2350,6 +2395,9 @@
         }
       }
       const metaRecords=records.filter(item=>viewerWeekIds.includes(item.id));
+      if(addShiftButton){
+        addShiftButton.disabled=!/^upload-\d+$/.test(viewerWeekIds[0]||'');
+      }
       const metaText=metaRecords.map(item=>formatWeekMeta(item)).filter(Boolean).join(' · ');
       if(meta){
         meta.textContent=metaText;
@@ -5468,6 +5516,95 @@
         setViewerWeeks([weekId],{persist:true});
         updateWeekSelectionUI();
         renderViews();
+      });
+    }
+
+    const btnAddShift=document.getElementById('btnAddShift');
+    const manualShiftDialog=document.getElementById('manualShiftDialog');
+    const manualShiftForm=document.getElementById('manualShiftForm');
+    const manualShiftError=document.getElementById('manualShiftError');
+    const btnSaveShift=document.getElementById('btnSaveShift');
+    const btnCancelShift=document.getElementById('btnCancelShift');
+
+    function selectedServerWeek(){
+      const viewerId=viewerWeekIds[0]||'';
+      const match=/^upload-(\d+)$/.exec(viewerId);
+      return match?{viewerId,uploadId:match[1],record:cachedWeeks.get(viewerId)}:null;
+    }
+
+    function openManualShiftDialog(){
+      const selected=selectedServerWeek();
+      if(!selected || !manualShiftDialog) return;
+      manualShiftForm.reset();
+      manualShiftError.textContent='';
+      const model=selected.record && selected.record.model;
+      const colleagues=document.getElementById('manualShiftColleagues');
+      colleagues.innerHTML='';
+      (Array.isArray(model && model.rows)?model.rows:[]).forEach(row=>{
+        const name=String(row && row.name||'').trim();
+        if(name){
+          const option=document.createElement('option');
+          option.value=name;
+          colleagues.appendChild(option);
+        }
+      });
+      const metadata=selected.record && selected.record.metadata;
+      const dateInput=document.getElementById('manualShiftDate');
+      dateInput.min=metadata && metadata.startIso?metadata.startIso:'';
+      dateInput.max=metadata && metadata.endIso?metadata.endIso:'';
+      dateInput.value=dateInput.min||'';
+      document.getElementById('manualShiftWeek').textContent=`Add a working shift to ${formatWeekMeta(selected.record)||'the selected week'}.`;
+      manualShiftDialog.showModal();
+      document.getElementById('manualShiftEmployee').focus();
+    }
+
+    if(btnAddShift) btnAddShift.addEventListener('click',openManualShiftDialog);
+    if(btnCancelShift) btnCancelShift.addEventListener('click',()=>manualShiftDialog.close());
+    if(manualShiftDialog){
+      manualShiftDialog.addEventListener('click',event=>{
+        if(event.target===manualShiftDialog) manualShiftDialog.close();
+      });
+    }
+    if(manualShiftForm){
+      manualShiftForm.addEventListener('submit',async event=>{
+        event.preventDefault();
+        const selected=selectedServerWeek();
+        if(!selected){
+          manualShiftError.textContent='Please select a saved week first.';
+          return;
+        }
+        if(!manualShiftForm.reportValidity()) return;
+        const formData=new FormData(manualShiftForm);
+        const payload=Object.fromEntries(formData.entries());
+        manualShiftError.textContent='';
+        btnSaveShift.disabled=true;
+        btnSaveShift.textContent='Adding…';
+        try{
+          const resp=await fetch(apiUrl(`/api/upload/${selected.uploadId}/shifts`),{
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify(payload),
+          });
+          if(!resp.ok){
+            let message=`Unable to add shift (${resp.status})`;
+            try{
+              const errorBody=await resp.json();
+              if(errorBody && errorBody.detail) message=String(errorBody.detail);
+            }catch(_err){ /* keep the status message */ }
+            throw new Error(message);
+          }
+          await refreshSavedWeeksFromServer();
+          ensureActiveWeeks();
+          setViewerWeeks([selected.viewerId],{persist:true});
+          updateWeekSelectionUI();
+          renderViews();
+          manualShiftDialog.close();
+        }catch(err){
+          manualShiftError.textContent=err && err.message?err.message:'Unable to add shift.';
+        }finally{
+          btnSaveShift.disabled=false;
+          btnSaveShift.textContent='Add shift';
+        }
       });
     }
 

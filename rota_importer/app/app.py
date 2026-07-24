@@ -2527,6 +2527,102 @@ def api_upload_model(upload_id: int):
     return JSONResponse(build_model_from_upload(upload_id))
 
 
+@app.post("/api/upload/{upload_id}/shifts")
+async def api_add_manual_shift(upload_id: int, request: Request):
+    """Add a working shift to an existing, selected rota week."""
+    try:
+        body = await request.json()
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise HTTPException(status_code=400, detail="Request body must be valid JSON") from exc
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="Request body must be a JSON object")
+
+    employee = sanitize_text(body.get("employee"), max_len=200)
+    employee_id = sanitize_text(body.get("employee_id"), max_len=50)
+    shift_date_text = sanitize_text(body.get("shift_date"), max_len=10)
+    start_time = sanitize_text(body.get("start_time"), max_len=5)
+    end_time = sanitize_text(body.get("end_time"), max_len=5)
+    if not employee:
+        raise HTTPException(status_code=400, detail="Colleague is required")
+    if not employee_id:
+        raise HTTPException(status_code=400, detail="Colleague ID is required")
+
+    shift_date = parse_wage_api_date(shift_date_text, "shift_date")
+    if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", start_time):
+        raise HTTPException(status_code=400, detail="start_time must be a valid 24-hour time (HH:MM)")
+    if not re.fullmatch(r"(?:[01]\d|2[0-3]):[0-5]\d", end_time):
+        raise HTTPException(status_code=400, detail="end_time must be a valid 24-hour time (HH:MM)")
+    if start_time == end_time:
+        raise HTTPException(status_code=400, detail="Start and finish times must be different")
+
+    start_minutes = int(start_time[:2]) * 60 + int(start_time[3:])
+    end_minutes = int(end_time[:2]) * 60 + int(end_time[3:])
+    duration_minutes = (end_minutes - start_minutes) % (24 * 60)
+    total_hours = f"{duration_minutes / 60:g}"
+    day_name = shift_date.strftime("%a").lower()
+    day_header = shift_date.strftime("%a(%m/%d)")
+    raw_cell = f"Whole Shift: {start_time} - {end_time}"
+
+    with get_conn() as conn:
+        upload = conn.execute("SELECT id FROM uploads WHERE id = ?", (upload_id,)).fetchone()
+        if upload is None:
+            raise HTTPException(status_code=404, detail="Selected week was not found")
+
+        bounds = conn.execute(
+            "SELECT MIN(shift_date) AS first_date, MAX(shift_date) AS last_date "
+            "FROM shifts WHERE upload_id = ? AND shift_date != ''",
+            (upload_id,),
+        ).fetchone()
+        first_date = bounds["first_date"] if bounds else None
+        last_date = bounds["last_date"] if bounds else None
+        if not first_date or not last_date or not (first_date <= shift_date_text <= last_date):
+            raise HTTPException(status_code=400, detail="Shift date must be within the selected week")
+
+        duplicate = conn.execute(
+            "SELECT id FROM shifts WHERE upload_id = ? AND shift_date = ? "
+            "AND LOWER(TRIM(employee)) = LOWER(TRIM(?)) AND TRIM(COALESCE(raw_cell, '')) != ''",
+            (upload_id, shift_date_text, employee),
+        ).fetchone()
+        if duplicate:
+            raise HTTPException(status_code=409, detail="This colleague already has a shift on that date")
+
+        existing_empty = conn.execute(
+            "SELECT id, row_index FROM shifts WHERE upload_id = ? AND shift_date = ? "
+            "AND LOWER(TRIM(employee)) = LOWER(TRIM(?)) ORDER BY id LIMIT 1",
+            (upload_id, shift_date_text, employee),
+        ).fetchone()
+        if existing_empty:
+            shift_id = existing_empty["id"]
+            row_index = existing_empty["row_index"]
+            conn.execute(
+                "UPDATE shifts SET employee = ?, employee_id = ?, day_name = ?, day_header = ?, "
+                "raw_cell = ?, start_time = ?, end_time = ?, total_hours = ? WHERE id = ?",
+                (employee, employee_id, day_name, day_header, raw_cell, start_time, end_time, total_hours, shift_id),
+            )
+        else:
+            employee_row = conn.execute(
+                "SELECT row_index FROM shifts WHERE upload_id = ? "
+                "AND LOWER(TRIM(employee)) = LOWER(TRIM(?)) ORDER BY id LIMIT 1",
+                (upload_id, employee),
+            ).fetchone()
+            if employee_row:
+                row_index = employee_row["row_index"]
+            else:
+                row_index = conn.execute(
+                    "SELECT COALESCE(MAX(row_index), 0) + 1 FROM shifts WHERE upload_id = ?", (upload_id,)
+                ).fetchone()[0]
+            cursor = conn.execute(
+                "INSERT INTO shifts (upload_id, employee, employee_id, day_name, day_header, shift_date, "
+                "raw_cell, start_time, end_time, total_hours, row_index) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (upload_id, employee, employee_id, day_name, day_header, shift_date_text, raw_cell,
+                 start_time, end_time, total_hours, row_index),
+            )
+            shift_id = cursor.lastrowid
+        conn.commit()
+
+    return JSONResponse({"ok": True, "shift_id": shift_id, "upload_id": upload_id}, status_code=201)
+
+
 @app.get("/api/viewer_sync")
 def api_viewer_sync():
     return JSONResponse(build_sync_payload())
